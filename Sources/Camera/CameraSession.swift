@@ -16,7 +16,14 @@ enum CaptureError: LocalizedError {
     }
 }
 
-/// 只负责采集：会话配置、预览帧、拍照。LUT 应用在帧回调里做。
+struct LensOption: Identifiable, Hashable {
+    let type: AVCaptureDevice.DeviceType
+    let label: String
+
+    var id: String { label }
+}
+
+/// 只负责采集：会话配置、镜头切换、变焦、预览帧、拍照。
 final class CameraSession: NSObject, ObservableObject {
     let session = AVCaptureSession()
     let photoOutput = AVCapturePhotoOutput()
@@ -26,6 +33,7 @@ final class CameraSession: NSObject, ObservableObject {
     private let videoQueue = DispatchQueue(label: "cam.video")
 
     private var device: AVCaptureDevice?
+    private var videoInput: AVCaptureDeviceInput?
     private var activeDelegate: PhotoCaptureDelegate?
 
     private let filterLock = NSLock()
@@ -37,6 +45,10 @@ final class CameraSession: NSObject, ObservableObject {
     @Published var isConfigured = false
     @Published var livePhotoSupported = false
     @Published var errorMessage: String?
+
+    @Published var lenses: [LensOption] = []
+    @Published var currentLensType: AVCaptureDevice.DeviceType = .builtInWideAngleCamera
+    @Published var zoomFactor: CGFloat = 1
 
     // MARK: - 生命周期
 
@@ -64,11 +76,14 @@ final class CameraSession: NSObject, ObservableObject {
             session.commitConfiguration()
             return
         }
-        device = dev
 
         do {
             let input = try AVCaptureDeviceInput(device: dev)
-            if session.canAddInput(input) { session.addInput(input) }
+            if session.canAddInput(input) {
+                session.addInput(input)
+                videoInput = input
+                device = dev
+            }
         } catch {
             DispatchQueue.main.async { self.errorMessage = error.localizedDescription }
             session.commitConfiguration()
@@ -77,7 +92,6 @@ final class CameraSession: NSObject, ObservableObject {
 
         if session.canAddOutput(photoOutput) {
             session.addOutput(photoOutput)
-            photoOutput.isHighResolutionCaptureEnabled = true
             if photoOutput.isLivePhotoCaptureSupported {
                 photoOutput.isLivePhotoCaptureEnabled = true
             }
@@ -90,20 +104,109 @@ final class CameraSession: NSObject, ObservableObject {
         videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
         if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
 
-        // 竖屏取景
+        applyPortraitRotation()
+        session.commitConfiguration()
+
+        let discovered = discoverLenses()
+
+        DispatchQueue.main.async {
+            self.lenses = discovered
+            self.currentLensType = .builtInWideAngleCamera
+            self.zoomFactor = 1
+            self.livePhotoSupported = self.photoOutput.isLivePhotoCaptureSupported
+            self.isConfigured = true
+        }
+    }
+
+    private func applyPortraitRotation() {
         if let conn = videoOutput.connection(with: .video), conn.isVideoRotationAngleSupported(90) {
             conn.videoRotationAngle = 90
         }
         if let conn = photoOutput.connection(with: .video), conn.isVideoRotationAngleSupported(90) {
             conn.videoRotationAngle = 90
         }
+    }
 
-        session.commitConfiguration()
+    private func discoverLenses() -> [LensOption] {
+        let types: [AVCaptureDevice.DeviceType] = [
+            .builtInUltraWideCamera,
+            .builtInWideAngleCamera,
+            .builtInTelephotoCamera
+        ]
+        let devices = AVCaptureDevice.DiscoverySession(
+            deviceTypes: types,
+            mediaType: .video,
+            position: .back
+        ).devices
 
-        DispatchQueue.main.async {
-            self.livePhotoSupported = self.photoOutput.isLivePhotoCaptureSupported
-            self.isConfigured = true
+        let options = devices.compactMap { dev -> LensOption? in
+            switch dev.deviceType {
+            case .builtInUltraWideCamera: return LensOption(type: dev.deviceType, label: "0.5×")
+            case .builtInWideAngleCamera: return LensOption(type: dev.deviceType, label: "1×")
+            case .builtInTelephotoCamera: return LensOption(type: dev.deviceType, label: "3×")
+            default: return nil
+            }
         }
+
+        return options.sorted { rank($0.type) < rank($1.type) }
+    }
+
+    private func rank(_ type: AVCaptureDevice.DeviceType) -> Int {
+        switch type {
+        case .builtInUltraWideCamera: return 0
+        case .builtInWideAngleCamera: return 1
+        case .builtInTelephotoCamera: return 2
+        default: return 3
+        }
+    }
+
+    // MARK: - 镜头与变焦
+
+    func switchLens(to type: AVCaptureDevice.DeviceType) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            guard type != self.currentLensType else { return }
+            guard let newDevice = AVCaptureDevice.default(type, for: .video, position: .back) else { return }
+            guard let newInput = try? AVCaptureDeviceInput(device: newDevice) else { return }
+
+            self.session.beginConfiguration()
+            if let current = self.videoInput { self.session.removeInput(current) }
+
+            if self.session.canAddInput(newInput) {
+                self.session.addInput(newInput)
+                self.videoInput = newInput
+                self.device = newDevice
+                self.applyPortraitRotation()
+                self.session.commitConfiguration()
+
+                DispatchQueue.main.async {
+                    self.currentLensType = type
+                    self.zoomFactor = 1
+                }
+            } else {
+                if let current = self.videoInput { self.session.addInput(current) }
+                self.session.commitConfiguration()
+            }
+        }
+    }
+
+    func setZoom(_ factor: CGFloat) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.device else { return }
+            guard (try? device.lockForConfiguration()) != nil else { return }
+
+            let maxZoom = min(device.activeFormat.videoMaxZoomFactor, 15)
+            let clamped = max(1, min(factor, maxZoom))
+            device.videoZoomFactor = clamped
+            device.unlockForConfiguration()
+
+            DispatchQueue.main.async { self.zoomFactor = clamped }
+        }
+    }
+
+    var currentMaxZoom: CGFloat {
+        guard let device else { return 15 }
+        return min(device.activeFormat.videoMaxZoomFactor, 15)
     }
 
     // MARK: - LUT
@@ -121,12 +224,6 @@ final class CameraSession: NSObject, ObservableObject {
         return activeFilter
     }
 
-    var lutForCapture: LUT3D? {
-        filterLock.lock()
-        defer { filterLock.unlock() }
-        return activeFilter != nil ? currentLUT : nil
-    }
-
     // MARK: - 拍照
 
     func capturePhoto(
@@ -136,13 +233,9 @@ final class CameraSession: NSObject, ObservableObject {
         sessionQueue.async { [weak self] in
             guard let self else { return }
 
-            let settings: AVCapturePhotoSettings
-            if self.photoOutput.availablePhotoCodecTypes.contains(.hevc) {
-                settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
-            } else {
-                settings = AVCapturePhotoSettings()
-            }
-            settings.photoQualityPrioritization = .quality
+            // 用默认格式，不强制指定编码，避免编码器不兼容抛异常
+            let settings = AVCapturePhotoSettings()
+            settings.photoQualityPrioritization = .balanced
 
             var movieURL: URL?
             if livePhoto, self.photoOutput.isLivePhotoCaptureEnabled {
@@ -223,7 +316,6 @@ final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate {
             return
         }
         photoData = photo.fileDataRepresentation()
-        // 没有实况视频的话，这里就算结束
         if movieURL == nil {
             finish(photoData, nil, nil)
         }

@@ -4,6 +4,7 @@ import AVFoundation
 struct CameraView: View {
     @StateObject private var model = CameraModel()
     @State private var showSettings = false
+    @State private var baseZoom: CGFloat = 1
 
     var body: some View {
         ZStack {
@@ -11,6 +12,8 @@ struct CameraView: View {
 
             MetalPreview(renderer: model.renderer)
                 .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .gesture(zoomGesture)
 
             VStack(spacing: 0) {
                 topBar
@@ -18,6 +21,19 @@ struct CameraView: View {
                     .padding(.top, 8)
 
                 Spacer()
+
+                if model.zoomFactor > 1.05 {
+                    Text(model.zoomLabel)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.yellow)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(.bottom, 10)
+                }
+
+                lensBar
+                    .padding(.bottom, 16)
 
                 bottomBar
                     .padding(.horizontal, 24)
@@ -49,7 +65,7 @@ struct CameraView: View {
                         .padding(14)
                         .background(.red.opacity(0.8), in: RoundedRectangle(cornerRadius: 14))
                         .padding(.horizontal, 30)
-                        .padding(.bottom, 160)
+                        .padding(.bottom, 200)
                 }
             }
         }
@@ -58,6 +74,21 @@ struct CameraView: View {
         }
         .onAppear(perform: requestAndStart)
         .onDisappear { model.stop() }
+        .onChange(of: model.currentLensType) { _, _ in
+            baseZoom = 1
+        }
+    }
+
+    // MARK: - 变焦手势
+
+    private var zoomGesture: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                model.setZoom(baseZoom * value.magnification)
+            }
+            .onEnded { value in
+                baseZoom = max(1, min(baseZoom * value.magnification, 15))
+            }
     }
 
     // MARK: - 顶部
@@ -97,11 +128,39 @@ struct CameraView: View {
         }
     }
 
+    // MARK: - 镜头
+
+    @ViewBuilder
+    private var lensBar: some View {
+        if model.lenses.count > 1 {
+            HStack(spacing: 6) {
+                ForEach(model.lenses) { lens in
+                    Button {
+                        baseZoom = 1
+                        model.switchLens(lens.type)
+                    } label: {
+                        Text(lens.label)
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(model.currentLensType == lens.type ? Color.black : Color.white)
+                            .frame(width: 44, height: 30)
+                            .background {
+                                if model.currentLensType == lens.type {
+                                    Capsule().fill(.yellow)
+                                } else {
+                                    Capsule().fill(.ultraThinMaterial)
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
     // MARK: - 底部
 
     private var bottomBar: some View {
         HStack(alignment: .center) {
-            // 实况开关
             Button {
                 model.livePhotoEnabled.toggle()
             } label: {
@@ -121,7 +180,6 @@ struct CameraView: View {
 
             Spacer()
 
-            // 快门
             Button {
                 model.capture()
             } label: {
@@ -139,7 +197,6 @@ struct CameraView: View {
 
             Spacer()
 
-            // LUT 开关
             Button {
                 model.lutEnabled.toggle()
             } label: {

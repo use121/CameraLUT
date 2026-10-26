@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import UIKit
+import AVFoundation
 
 final class CameraModel: ObservableObject {
     enum LivePhotoLUTMode: String, CaseIterable, Identifiable {
@@ -36,6 +37,10 @@ final class CameraModel: ObservableObject {
     @Published var livePhotoLUTMode: LivePhotoLUTMode = .staticOnly
     @Published var livePhotoSupported: Bool = false
 
+    @Published var lenses: [LensOption] = []
+    @Published var currentLensType: AVCaptureDevice.DeviceType = .builtInWideAngleCamera
+    @Published var zoomFactor: CGFloat = 1
+
     @Published var isCapturing = false
     @Published var toast: String?
     @Published var errorText: String?
@@ -53,6 +58,18 @@ final class CameraModel: ObservableObject {
         session.$errorMessage
             .receive(on: DispatchQueue.main)
             .assign(to: &$errorText)
+
+        session.$lenses
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$lenses)
+
+        session.$currentLensType
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$currentLensType)
+
+        session.$zoomFactor
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$zoomFactor)
 
         refreshLUTs()
         selectedFile = LUTStore.shared.selectedFileName
@@ -108,6 +125,20 @@ final class CameraModel: ObservableObject {
     var selectedDisplayName: String {
         guard let file = selectedFile else { return "无 LUT" }
         return LUTStore.shared.load(fileName: file)?.name ?? file
+    }
+
+    // MARK: - 镜头与变焦
+
+    func switchLens(_ type: AVCaptureDevice.DeviceType) {
+        session.switchLens(to: type)
+    }
+
+    func setZoom(_ factor: CGFloat) {
+        session.setZoom(factor)
+    }
+
+    var zoomLabel: String {
+        String(format: "%.1f×", Double(zoomFactor))
     }
 
     // MARK: - 生命周期

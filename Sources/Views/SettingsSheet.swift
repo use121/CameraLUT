@@ -23,12 +23,24 @@ struct SettingsSheet: View {
             }
             .fileImporter(
                 isPresented: $showImporter,
-                allowedContentTypes: [.data],
+                allowedContentTypes: [.item],
                 allowsMultipleSelection: false
             ) { result in
-                if case .success(let urls) = result, let url = urls.first {
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
                     model.importLUT(from: url)
+                case .failure(let error):
+                    model.errorText = "选择文件失败：\(error.localizedDescription)"
                 }
+            }
+            .alert("提示", isPresented: Binding(
+                get: { model.errorText != nil },
+                set: { if !$0 { model.errorText = nil } }
+            )) {
+                Button("好") { model.errorText = nil }
+            } message: {
+                Text(model.errorText ?? "")
             }
         }
     }
