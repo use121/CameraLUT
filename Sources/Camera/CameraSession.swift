@@ -222,10 +222,25 @@ final class CameraSession: NSObject, ObservableObject {
     }
 
     private func buildLenses(for device: AVCaptureDevice, base: CGFloat) -> [LensOption] {
-        var bases: [CGFloat] = [base]
+        var bases: [CGFloat] = []
 
-        for value in device.virtualDeviceSwitchOverVideoZoomFactors {
-            bases.append(base * CGFloat(truncating: value))
+        let factors = device.virtualDeviceSwitchOverVideoZoomFactors.map {
+            CGFloat(truncating: $0)
+        }
+
+        if !factors.isEmpty {
+            bases.append(base)
+            for factor in factors {
+                bases.append(base * factor)
+            }
+        } else {
+            // 虚拟设备的 switchOver 有时为空，退回用物理组成镜头推导档位
+            let constituents = device.constituentDevices
+            if constituents.isEmpty {
+                bases = [base]
+            } else {
+                bases = constituents.map { lensBase(for: $0.deviceType) }
+            }
         }
 
         var unique: [CGFloat] = []
@@ -234,6 +249,14 @@ final class CameraSession: NSObject, ObservableObject {
         }
 
         return unique.map { LensOption(base: $0, label: formatZoom($0)) }
+    }
+
+    private func lensBase(for type: AVCaptureDevice.DeviceType) -> CGFloat {
+        switch type {
+        case .builtInUltraWideCamera: return 0.5
+        case .builtInTelephotoCamera: return 3
+        default: return 1
+        }
     }
 
     private func formatZoom(_ value: CGFloat) -> String {

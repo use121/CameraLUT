@@ -48,18 +48,21 @@ struct ManualPanel: View {
                         Text(item.label)
                             .font(.system(size: 11, weight: .semibold, design: .rounded))
                         Circle()
-                            .fill(manual ? Color.yellow : Color.primary.opacity(0.25))
+                            .fill(manual ? Color.black.opacity(0.55) : Color.primary.opacity(0.28))
                             .frame(width: 5, height: 5)
                     }
                     .foregroundStyle(active ? Color.black : Color.primary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 7)
+                    .background {
+                        Capsule().fill(
+                            active
+                                ? Color.yellow.opacity(0.85)
+                                : Color.primary.opacity(0.09)
+                        )
+                    }
                 }
-                .buttonStyle(.plain)
-                .glassEffect(
-                    active ? .regular.tint(.yellow.opacity(0.85)).interactive() : .regular,
-                    in: .capsule
-                )
+                .buttonStyle(.pressable)
             }
         }
     }
@@ -82,14 +85,17 @@ struct ManualPanel: View {
             } label: {
                 Text("A")
                     .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .foregroundStyle(isManual(target) ? Color.secondary : Color.yellow)
-                    .frame(width: 30, height: 26)
+                    .foregroundStyle(isManual(target) ? Color.secondary : Color.black)
+                    .frame(width: 32, height: 26)
+                    .background {
+                        Capsule().fill(
+                            isManual(target)
+                                ? Color.primary.opacity(0.09)
+                                : Color.yellow.opacity(0.85)
+                        )
+                    }
             }
-            .buttonStyle(.plain)
-            .glassEffect(
-                isManual(target) ? .regular : .regular.tint(.yellow.opacity(0.7)).interactive(),
-                in: .capsule
-            )
+            .buttonStyle(.pressable)
         }
     }
 

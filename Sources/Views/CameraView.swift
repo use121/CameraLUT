@@ -19,12 +19,9 @@ struct CameraView: View {
     @State private var showExposure = false
     @State private var hideTask: Task<Void, Never>?
 
-    @Namespace private var lensNS
-
     private var minZoom: CGFloat { model.lenses.first?.base ?? 1 }
     private let maxZoom: CGFloat = 15
 
-    /// 动态读取安全区，不再硬编码
     private var safeInsets: UIEdgeInsets {
         (UIApplication.shared.connectedScenes.first as? UIWindowScene)?
             .windows.first?.safeAreaInsets ?? .zero
@@ -39,7 +36,6 @@ struct CameraView: View {
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
 
-                // 手势层：预览之上、控件之下
                 Color.clear
                     .contentShape(Rectangle())
                     .gesture(pinchGesture)
@@ -141,7 +137,6 @@ struct CameraView: View {
         }
     }
 
-    /// 屏幕点 → 设备坐标。视频旋转 90°，设备 (0,0) 落在竖屏画面右上角。
     private func devicePoint(from location: CGPoint, in size: CGSize) -> CGPoint {
         let aspect = model.frameAspect
         guard size.width > 0, size.height > 0, aspect > 0 else {
@@ -236,25 +231,16 @@ struct CameraView: View {
 
     // MARK: - 顶部
 
+    private var lutSelection: Binding<String> {
+        Binding(
+            get: { model.selectedFile ?? "" },
+            set: { model.select($0.isEmpty ? nil : $0) }
+        )
+    }
+
     private var topBar: some View {
         HStack(spacing: 8) {
-            Button {
-                model.lutEnabled.toggle()
-            } label: {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(model.lutEnabled ? Color.green : Color.white.opacity(0.4))
-                        .frame(width: 7, height: 7)
-                    Text(model.lutEnabled ? model.selectedDisplayName : "LUT 关")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 13)
-                .padding(.vertical, 9)
-            }
-            .buttonStyle(.plain)
-            .glassEffect(.regular, in: .capsule)
+            lutMenu
 
             Spacer()
 
@@ -268,9 +254,9 @@ struct CameraView: View {
                     .foregroundStyle(showManual ? Color.yellow : Color.primary)
                     .frame(width: 40, height: 40)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
             .glassEffect(
-                showManual ? .regular.tint(.yellow.opacity(0.3)).interactive() : .regular,
+                .regular.tint(showManual ? .yellow.opacity(0.3) : .clear).interactive(),
                 in: Circle()
             )
 
@@ -283,8 +269,8 @@ struct CameraView: View {
                     .foregroundStyle(.primary)
                     .frame(width: 40, height: 40)
             }
-            .buttonStyle(.plain)
-            .glassEffect(.regular, in: Circle())
+            .buttonStyle(.pressable)
+            .glassEffect(.regular.interactive(), in: Circle())
 
             Button {
                 showGallery = true
@@ -303,8 +289,8 @@ struct CameraView: View {
                 .frame(width: 40, height: 40)
                 .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
-            .buttonStyle(.plain)
-            .glassEffect(.regular, in: .rect(cornerRadius: 11))
+            .buttonStyle(.pressable)
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 11))
 
             Button {
                 showSettings = true
@@ -314,8 +300,44 @@ struct CameraView: View {
                     .foregroundStyle(.primary)
                     .frame(width: 40, height: 40)
             }
-            .buttonStyle(.plain)
-            .glassEffect(.regular, in: Circle())
+            .buttonStyle(.pressable)
+            .glassEffect(.regular.interactive(), in: Circle())
+        }
+    }
+
+    /// 左上角：点击弹出 LUT 菜单直接切换
+    private var lutMenu: some View {
+        Menu {
+            Picker("LUT", selection: lutSelection) {
+                Text("无").tag("")
+                ForEach(model.lutInfos) { info in
+                    Text(info.name).tag(info.id)
+                }
+            }
+
+            Divider()
+
+            Button(model.lutEnabled ? "关闭 LUT" : "打开 LUT") {
+                model.lutEnabled.toggle()
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(model.lutEnabled ? Color.green : Color.red)
+                    .frame(width: 7, height: 7)
+
+                Text(model.lutEnabled ? model.selectedDisplayName : "LUT 关")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .lineLimit(1)
+
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 9)
+            .glassEffect(.regular.interactive(), in: .capsule)
         }
     }
 
@@ -396,37 +418,35 @@ struct CameraView: View {
         }
     }
 
-    // MARK: - 镜头
+    // MARK: - 镜头快切
 
     @ViewBuilder
     private var lensBar: some View {
         if model.lenses.count > 1 {
-            GlassEffectContainer(spacing: 6) {
-                HStack(spacing: 6) {
-                    ForEach(model.lenses) { lens in
-                        let active = abs(lens.base - model.activeLensBase) < 0.01
+            HStack(spacing: 6) {
+                ForEach(model.lenses) { lens in
+                    let active = abs(lens.base - model.activeLensBase) < 0.01
 
-                        Button {
-                            pinchBase = lens.base
-                            model.selectLens(lens)
-                        } label: {
-                            Text(lens.label)
-                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .foregroundStyle(active ? Color.black : Color.primary)
-                                .frame(width: 46, height: 30)
-                        }
-                        .buttonStyle(.plain)
-                        .glassEffect(
-                            active
-                                ? .regular.tint(.yellow.opacity(0.85)).interactive()
-                                : .regular,
-                            in: .capsule
-                        )
+                    Button {
+                        pinchBase = lens.base
+                        model.selectLens(lens)
+                    } label: {
+                        Text(lens.label)
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(active ? Color.black : Color.primary)
+                            .frame(width: 46, height: 30)
                     }
+                    .buttonStyle(.pressable)
+                    .glassEffect(
+                        active
+                            ? .regular.tint(.yellow.opacity(0.85)).interactive()
+                            : .regular.interactive(),
+                        in: .capsule
+                    )
                 }
-                .animation(.spring(response: 0.42, dampingFraction: 0.72), value: model.activeLensBase)
-                .gesture(lensDragGesture)
             }
+            .animation(.spring(response: 0.42, dampingFraction: 0.72), value: model.activeLensBase)
+            .gesture(lensDragGesture)
         }
     }
 
@@ -446,7 +466,7 @@ struct CameraView: View {
                 .foregroundStyle(model.livePhotoEnabled ? Color.yellow : Color.primary)
                 .frame(width: 54, height: 54)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
             .glassEffect(
                 .regular.tint(model.livePhotoEnabled ? .yellow.opacity(0.3) : .clear).interactive(),
                 in: Circle()
@@ -466,7 +486,7 @@ struct CameraView: View {
                         .frame(width: 63, height: 63)
                 }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
             .disabled(model.isCapturing)
             .scaleEffect(model.isCapturing ? 0.94 : 1)
             .animation(.spring(response: 0.28, dampingFraction: 0.7), value: model.isCapturing)
@@ -482,12 +502,12 @@ struct CameraView: View {
                     Text(model.lutEnabled ? "开" : "关")
                         .font(.system(size: 9, weight: .medium, design: .rounded))
                 }
-                .foregroundStyle(model.lutEnabled ? Color.green : Color.primary)
+                .foregroundStyle(model.lutEnabled ? Color.green : Color.red)
                 .frame(width: 54, height: 54)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
             .glassEffect(
-                .regular.tint(model.lutEnabled ? .green.opacity(0.28) : .clear).interactive(),
+                .regular.tint(model.lutEnabled ? .green.opacity(0.26) : .red.opacity(0.22)).interactive(),
                 in: Circle()
             )
         }
