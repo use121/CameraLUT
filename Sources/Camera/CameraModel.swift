@@ -66,6 +66,11 @@ final class CameraModel: ObservableObject {
     @Published var lenses: [LensOption] = []
     @Published var virtualZoom: CGFloat = 1
 
+    @Published var exposureBias: Float = 0
+    @Published var exposureRange: ClosedRange<Float> = -8...8
+    @Published var focusPoint: CGPoint?
+    @Published var frameAspect: CGFloat = 9.0 / 16.0
+
     /// 当前焦段落在哪颗镜头的范围里，用于高亮
     var activeLensBase: CGFloat {
         let sorted = lenses.sorted { $0.base < $1.base }
@@ -113,6 +118,22 @@ final class CameraModel: ObservableObject {
         session.$virtualZoom
             .receive(on: DispatchQueue.main)
             .assign(to: &$virtualZoom)
+
+        session.$exposureBias
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$exposureBias)
+
+        session.$exposureRange
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$exposureRange)
+
+        session.$focusPoint
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$focusPoint)
+
+        session.$frameAspect
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$frameAspect)
 
         captures = CaptureStore.shared.items()
         lastCapture = captures.first
@@ -215,6 +236,20 @@ final class CameraModel: ObservableObject {
 
     func selectLens(_ lens: LensOption) {
         session.setVirtualZoom(lens.base, animated: true)
+    }
+
+    // MARK: - 对焦与曝光
+
+    func focus(at devicePoint: CGPoint) {
+        session.focus(at: devicePoint)
+    }
+
+    func setExposureBias(_ value: Float) {
+        session.setExposureBias(value)
+    }
+
+    var exposureLabel: String {
+        String(format: "%+.1f", Double(exposureBias))
     }
 
     var zoomLabel: String {

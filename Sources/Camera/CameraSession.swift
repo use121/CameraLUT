@@ -58,6 +58,18 @@ final class CameraSession: NSObject, ObservableObject {
     @Published var lenses: [LensOption] = []
     @Published var virtualZoom: CGFloat = 1
 
+    /// 曝光补偿（官方 API：exposureTargetBias）
+    @Published var exposureBias: Float = 0
+    @Published var exposureRange: ClosedRange<Float> = -8...8
+
+    /// 对焦点（设备坐标系，0...1）
+    @Published var focusPoint: CGPoint?
+
+    /// 竖屏取景画面的宽高比，用于把屏幕点换算成设备点
+    @Published var frameAspect: CGFloat = 9.0 / 16.0
+
+    private var didReportFrameSize = false
+
     private let maxVirtualZoom: CGFloat = 15
 
     // MARK: - 生命周期
@@ -103,6 +115,7 @@ final class CameraSession: NSObject, ObservableObject {
 
         if session.canAddOutput(photoOutput) {
             session.addOutput(photoOutput)
+            photoOutput.maxPhotoQualityPrioritization = .quality
         }
 
         videoOutput.videoSettings = [
@@ -138,6 +151,8 @@ final class CameraSession: NSObject, ObservableObject {
             self.zoomBase = base
             self.lenses = options
             self.virtualZoom = 1
+            self.exposureRange = dev.minExposureTargetBias...dev.maxExposureTargetBias
+            self.exposureBias = dev.exposureTargetBias
             self.isConfigured = true
         }
     }
@@ -250,6 +265,68 @@ final class CameraSession: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - 对焦与曝光（官方 API）
+
+    /// 点按对焦 + 测光。point 为设备坐标系（左上 0,0，右下 1,1）。
+    func focus(at point: CGPoint) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.device else { return }
+            guard (try? device.lockForConfiguration()) != nil else { return }
+
+            let clamped = CGPoint(
+                x: min(max(point.x, 0.05), 0.95),
+                y: min(max(point.y, 0.05), 0.95)
+            )
+
+            if device.isFocusPointOfInterestSupported {
+                device.focusPointOfInterest = clamped
+                if device.isFocusModeSupported(.autoFocus) {
+                    device.focusMode = .autoFocus
+                }
+            }
+
+            if device.isExposurePointOfInterestSupported {
+                device.exposurePointOfInterest = clamped
+                if device.isExposureModeSupported(.autoExpose) {
+                    device.exposureMode = .autoExpose
+                }
+            }
+
+            device.unlockForConfiguration()
+
+            DispatchQueue.main.async {
+                self.focusPoint = clamped
+            }
+
+            // 单次对焦完成后回到连续对焦，和原生相机一致
+            self.sessionQueue.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                guard let self, let device = self.device else { return }
+                guard (try? device.lockForConfiguration()) != nil else { return }
+                if device.isFocusModeSupported(.continuousAutoFocus) {
+                    device.focusMode = .continuousAutoFocus
+                }
+                if device.isExposureModeSupported(.continuousAutoExposure) {
+                    device.exposureMode = .continuousAutoExposure
+                }
+                device.unlockForConfiguration()
+            }
+        }
+    }
+
+    /// 曝光补偿
+    func setExposureBias(_ bias: Float) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.device else { return }
+            let clamped = min(max(bias, device.minExposureTargetBias), device.maxExposureTargetBias)
+            device.setExposureTargetBias(clamped, completionHandler: nil)
+            DispatchQueue.main.async {
+                if abs(self.exposureBias - clamped) > 0.01 {
+                    self.exposureBias = clamped
+                }
+            }
+        }
+    }
+
     // MARK: - LUT
 
     func setLUT(_ lut: LUT3D?, enabled: Bool, intensity: Double) {
@@ -278,7 +355,7 @@ final class CameraSession: NSObject, ObservableObject {
             guard let self else { return }
 
             let settings = AVCapturePhotoSettings()
-            settings.photoQualityPrioritization = .balanced
+            settings.photoQualityPrioritization = .quality
 
             var movieURL: URL?
             if livePhoto, self.photoOutput.isLivePhotoCaptureEnabled {
@@ -319,6 +396,15 @@ extension CameraSession: AVCaptureVideoDataOutputSampleBufferDelegate {
         from connection: AVCaptureConnection
     ) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        if !didReportFrameSize {
+            didReportFrameSize = true
+            let width = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
+            let height = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
+            if width > 0, height > 0 {
+                DispatchQueue.main.async { self.frameAspect = width / height }
+            }
+        }
 
         var image = CIImage(cvPixelBuffer: pixelBuffer, options: [.colorSpace: LUT3D.sRGB])
 
