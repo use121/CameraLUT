@@ -37,6 +37,7 @@ final class CameraSession: NSObject, ObservableObject {
     private var videoInput: AVCaptureDeviceInput?
     private var activeDelegate: PhotoCaptureDelegate?
     private var startObserver: NSObjectProtocol?
+    private var pendingLensWork: DispatchWorkItem?
 
     private let filterLock = NSLock()
     private var activeFilter: CIFilter?
@@ -207,11 +208,34 @@ final class CameraSession: NSObject, ObservableObject {
             guard let target = self.lensFor(vz) else { return }
 
             if target.type != self.currentLensType {
-                self.applyLens(target, virtualZoom: vz)
+                if animated {
+                    // 点镜头按钮是明确意图，立刻切
+                    self.pendingLensWork?.cancel()
+                    self.pendingLensWork = nil
+                    self.applyLens(target, virtualZoom: vz)
+                } else {
+                    // 切镜头要重建采集会话，拖动中立刻切会顿一下。
+                    // 延迟 120ms，手指停在同一档位才真正切，拖过去的过程就顺了。
+                    self.scheduleLensSwitch(target, virtualZoom: vz)
+                }
             } else {
+                self.pendingLensWork?.cancel()
+                self.pendingLensWork = nil
                 self.applyDeviceZoom(vz, base: target.base, animated: animated)
             }
         }
+    }
+
+    private func scheduleLensSwitch(_ lens: LensOption, virtualZoom vz: CGFloat) {
+        pendingLensWork?.cancel()
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard lens.type != self.currentLensType else { return }
+            self.applyLens(lens, virtualZoom: vz)
+        }
+        pendingLensWork = work
+        sessionQueue.asyncAfter(deadline: .now() + 0.12, execute: work)
     }
 
     private func lensFor(_ vz: CGFloat) -> LensOption? {
