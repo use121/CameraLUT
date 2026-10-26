@@ -64,8 +64,19 @@ final class CameraModel: ObservableObject {
     // MARK: - 镜头与变焦
 
     @Published var lenses: [LensOption] = []
-    @Published var currentLensType: AVCaptureDevice.DeviceType = .builtInWideAngleCamera
     @Published var virtualZoom: CGFloat = 1
+
+    /// 当前焦段落在哪颗镜头的范围里，用于高亮
+    var activeLensBase: CGFloat {
+        let sorted = lenses.sorted { $0.base < $1.base }
+        guard let first = sorted.first else { return 1 }
+
+        var result = first.base
+        for lens in sorted where virtualZoom >= lens.base - 0.01 {
+            result = lens.base
+        }
+        return result
+    }
 
     // MARK: - 拍照与图库
 
@@ -98,10 +109,6 @@ final class CameraModel: ObservableObject {
         session.$lenses
             .receive(on: DispatchQueue.main)
             .assign(to: &$lenses)
-
-        session.$currentLensType
-            .receive(on: DispatchQueue.main)
-            .assign(to: &$currentLensType)
 
         session.$virtualZoom
             .receive(on: DispatchQueue.main)

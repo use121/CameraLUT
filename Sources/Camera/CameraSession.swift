@@ -17,14 +17,18 @@ enum CaptureError: LocalizedError {
 }
 
 struct LensOption: Identifiable, Hashable {
-    let type: AVCaptureDevice.DeviceType
-    let label: String
-    /// 该镜头的原生等效焦段（0.5 / 1 / 3）
+    /// 等效焦段（0.5 / 1 / 3 …）
     let base: CGFloat
+    let label: String
 
     var id: String { label }
 }
 
+/// 采集层。
+///
+/// 变焦走**虚拟多摄设备**（builtInTripleCamera / DualWideCamera），
+/// 由系统在内部完成镜头切换和交叉淡化 —— 全程不重建会话，所以是丝滑的。
+/// 早期版本手动 removeInput/addInput 切物理镜头，每次都要重配会话，必然顿挫。
 final class CameraSession: NSObject, ObservableObject {
     let session = AVCaptureSession()
     let photoOutput = AVCapturePhotoOutput()
@@ -37,7 +41,9 @@ final class CameraSession: NSObject, ObservableObject {
     private var videoInput: AVCaptureDeviceInput?
     private var activeDelegate: PhotoCaptureDelegate?
     private var startObserver: NSObjectProtocol?
-    private var pendingLensWork: DispatchWorkItem?
+
+    /// 虚拟设备里最广那颗镜头的等效焦段（有超广角就是 0.5）
+    private var zoomBase: CGFloat = 1
 
     private let filterLock = NSLock()
     private var activeFilter: CIFilter?
@@ -50,7 +56,6 @@ final class CameraSession: NSObject, ObservableObject {
     @Published var errorMessage: String?
 
     @Published var lenses: [LensOption] = []
-    @Published var currentLensType: AVCaptureDevice.DeviceType = .builtInWideAngleCamera
     @Published var virtualZoom: CGFloat = 1
 
     private let maxVirtualZoom: CGFloat = 15
@@ -77,7 +82,7 @@ final class CameraSession: NSObject, ObservableObject {
         session.beginConfiguration()
         session.sessionPreset = .photo
 
-        guard let dev = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+        guard let dev = pickBackDevice() else {
             DispatchQueue.main.async { self.errorMessage = CaptureError.noDevice.localizedDescription }
             session.commitConfiguration()
             return
@@ -120,17 +125,68 @@ final class CameraSession: NSObject, ObservableObject {
             }
         }
 
-        let discovered = discoverLenses()
+        let base = constituentBase(for: dev)
+        let options = buildLenses(for: dev, base: base)
+
+        // 起始停在 1×（主摄），虚拟设备用 videoZoomFactor = 1 / base 表示
+        if (try? dev.lockForConfiguration()) != nil {
+            dev.videoZoomFactor = max(1, 1 / base)
+            dev.unlockForConfiguration()
+        }
 
         DispatchQueue.main.async {
-            self.lenses = discovered
-            self.currentLensType = .builtInWideAngleCamera
+            self.zoomBase = base
+            self.lenses = options
             self.virtualZoom = 1
             self.isConfigured = true
         }
     }
 
-    /// 实况支持必须在会话真正跑起来之后才准确
+    /// 优先虚拟多摄设备：一颗设备覆盖全部焦段，系统负责无缝切换
+    private func pickBackDevice() -> AVCaptureDevice? {
+        let candidates: [AVCaptureDevice.DeviceType] = [
+            .builtInTripleCamera,
+            .builtInDualWideCamera,
+            .builtInDualCamera,
+            .builtInWideAngleCamera
+        ]
+        for type in candidates {
+            if let dev = AVCaptureDevice.default(type, for: .video, position: .back) {
+                return dev
+            }
+        }
+        return nil
+    }
+
+    private func constituentBase(for device: AVCaptureDevice) -> CGFloat {
+        let hasUltraWide = device.constituentDevices.contains {
+            $0.deviceType == .builtInUltraWideCamera
+        }
+        return hasUltraWide ? 0.5 : 1.0
+    }
+
+    private func buildLenses(for device: AVCaptureDevice, base: CGFloat) -> [LensOption] {
+        var bases: [CGFloat] = [base]
+
+        for value in device.virtualDeviceSwitchOverVideoZoomFactors {
+            bases.append(base * CGFloat(truncating: value))
+        }
+
+        var unique: [CGFloat] = []
+        for value in bases.sorted() where !unique.contains(where: { abs($0 - value) < 0.01 }) {
+            unique.append(value)
+        }
+
+        return unique.map { LensOption(base: $0, label: formatZoom($0)) }
+    }
+
+    private func formatZoom(_ value: CGFloat) -> String {
+        if abs(value - value.rounded()) < 0.05 {
+            return String(format: "%.0f×", value)
+        }
+        return String(format: "%.1f×", value)
+    }
+
     private func refreshLivePhotoSupport() {
         let supported = photoOutput.isLivePhotoCaptureSupported
 
@@ -160,42 +216,17 @@ final class CameraSession: NSObject, ObservableObject {
         }
     }
 
-    private func discoverLenses() -> [LensOption] {
-        let types: [AVCaptureDevice.DeviceType] = [
-            .builtInUltraWideCamera,
-            .builtInWideAngleCamera,
-            .builtInTelephotoCamera
-        ]
-        let devices = AVCaptureDevice.DiscoverySession(
-            deviceTypes: types,
-            mediaType: .video,
-            position: .back
-        ).devices
-
-        let options = devices.compactMap { dev -> LensOption? in
-            switch dev.deviceType {
-            case .builtInUltraWideCamera: return LensOption(type: dev.deviceType, label: "0.5×", base: 0.5)
-            case .builtInWideAngleCamera: return LensOption(type: dev.deviceType, label: "1×", base: 1)
-            case .builtInTelephotoCamera: return LensOption(type: dev.deviceType, label: "3×", base: 3)
-            default: return nil
-            }
-        }
-
-        return options.sorted { $0.base < $1.base }
-    }
-
     deinit {
         if let startObserver {
             NotificationCenter.default.removeObserver(startObserver)
         }
     }
 
-    // MARK: - 变焦（统一用「虚拟焦段」驱动）
+    // MARK: - 变焦
 
-    /// 虚拟焦段：0.5 表示超广角，1 表示主摄，3 表示长焦。
-    /// 跨越阈值时自动切换物理镜头，和原生相机的手感一致。
+    /// 只改 videoZoomFactor，不碰会话配置。虚拟设备内部自己切镜头 + 交叉淡化。
     func setVirtualZoom(_ value: CGFloat, animated: Bool = false) {
-        let vz = max(0.5, min(value, maxVirtualZoom))
+        let vz = max(zoomBase, min(value, maxVirtualZoom))
 
         DispatchQueue.main.async {
             if abs(self.virtualZoom - vz) > 0.001 {
@@ -204,99 +235,19 @@ final class CameraSession: NSObject, ObservableObject {
         }
 
         sessionQueue.async { [weak self] in
-            guard let self else { return }
-            guard let target = self.lensFor(vz) else { return }
+            guard let self, let device = self.device else { return }
+            guard (try? device.lockForConfiguration()) != nil else { return }
 
-            if target.type != self.currentLensType {
-                if animated {
-                    // 点镜头按钮是明确意图，立刻切
-                    self.pendingLensWork?.cancel()
-                    self.pendingLensWork = nil
-                    self.applyLens(target, virtualZoom: vz)
-                } else {
-                    // 切镜头要重建采集会话，拖动中立刻切会顿一下。
-                    // 延迟 120ms，手指停在同一档位才真正切，拖过去的过程就顺了。
-                    self.scheduleLensSwitch(target, virtualZoom: vz)
-                }
+            let rawFactor = vz / self.zoomBase
+            let factor = max(1, min(rawFactor, device.maxAvailableVideoZoomFactor))
+
+            if animated {
+                device.ramp(toVideoZoomFactor: factor, withRate: 8)
             } else {
-                self.pendingLensWork?.cancel()
-                self.pendingLensWork = nil
-                self.applyDeviceZoom(vz, base: target.base, animated: animated)
+                device.videoZoomFactor = factor
             }
+            device.unlockForConfiguration()
         }
-    }
-
-    private func scheduleLensSwitch(_ lens: LensOption, virtualZoom vz: CGFloat) {
-        pendingLensWork?.cancel()
-
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            guard lens.type != self.currentLensType else { return }
-            self.applyLens(lens, virtualZoom: vz)
-        }
-        pendingLensWork = work
-        sessionQueue.asyncAfter(deadline: .now() + 0.12, execute: work)
-    }
-
-    private func lensFor(_ vz: CGFloat) -> LensOption? {
-        guard !lenses.isEmpty else { return nil }
-
-        // 阈值带一点迟滞，避免在边界上反复切镜头
-        if vz < 0.95, let uw = lenses.first(where: { $0.type == .builtInUltraWideCamera }) {
-            return uw
-        }
-        if vz >= 2.9, let tele = lenses.first(where: { $0.type == .builtInTelephotoCamera }) {
-            return tele
-        }
-        return lenses.first(where: { $0.type == .builtInWideAngleCamera }) ?? lenses.first
-    }
-
-    private func applyDeviceZoom(_ vz: CGFloat, base: CGFloat, animated: Bool) {
-        guard let device else { return }
-        guard (try? device.lockForConfiguration()) != nil else { return }
-
-        let maxFactor = min(device.activeFormat.videoMaxZoomFactor, 15)
-        let factor = max(1, min(vz / base, maxFactor))
-
-        if animated {
-            device.ramp(toVideoZoomFactor: factor, withRate: 10)
-        } else {
-            device.videoZoomFactor = factor
-        }
-        device.unlockForConfiguration()
-    }
-
-    private func applyLens(_ lens: LensOption, virtualZoom vz: CGFloat) {
-        guard let newDevice = AVCaptureDevice.default(lens.type, for: .video, position: .back),
-              let newInput = try? AVCaptureDeviceInput(device: newDevice) else { return }
-
-        session.beginConfiguration()
-        if let current = videoInput { session.removeInput(current) }
-
-        guard session.canAddInput(newInput) else {
-            if let current = videoInput { session.addInput(current) }
-            session.commitConfiguration()
-            return
-        }
-
-        session.addInput(newInput)
-        videoInput = newInput
-        device = newDevice
-        applyPortraitRotation()
-        session.commitConfiguration()
-
-        if (try? newDevice.lockForConfiguration()) != nil {
-            let maxFactor = min(newDevice.activeFormat.videoMaxZoomFactor, 15)
-            let factor = max(1, min(vz / lens.base, maxFactor))
-            newDevice.videoZoomFactor = factor
-            newDevice.unlockForConfiguration()
-        }
-
-        DispatchQueue.main.async {
-            self.currentLensType = lens.type
-        }
-
-        refreshLivePhotoSupport()
     }
 
     // MARK: - LUT
@@ -369,7 +320,6 @@ extension CameraSession: AVCaptureVideoDataOutputSampleBufferDelegate {
     ) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-        // 明确声明 sRGB，和成片管线保持一致
         var image = CIImage(cvPixelBuffer: pixelBuffer, options: [.colorSpace: LUT3D.sRGB])
 
         if let filter = snapshotFilter() {

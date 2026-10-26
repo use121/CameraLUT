@@ -14,7 +14,8 @@ struct CameraView: View {
 
     @Namespace private var lensNS
 
-    private let minZoom: CGFloat = 0.5
+    /// 最广那颗镜头的焦段（有超广角就是 0.5）
+    private var minZoom: CGFloat { model.lenses.first?.base ?? 1 }
     private let maxZoom: CGFloat = 15
 
     var body: some View {
@@ -239,7 +240,7 @@ struct CameraView: View {
         if model.lenses.count > 1 {
             HStack(spacing: 6) {
                 ForEach(model.lenses) { lens in
-                    let active = model.currentLensType == lens.type
+                    let active = abs(lens.base - model.activeLensBase) < 0.01
 
                     Button {
                         pinchBase = lens.base
@@ -263,7 +264,7 @@ struct CameraView: View {
                     .buttonStyle(.plain)
                 }
             }
-            .animation(.spring(response: 0.42, dampingFraction: 0.72), value: model.currentLensType)
+            .animation(.spring(response: 0.42, dampingFraction: 0.72), value: model.activeLensBase)
             .gesture(lensDragGesture)
         }
     }
