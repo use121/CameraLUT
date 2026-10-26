@@ -8,20 +8,19 @@ enum PhotoSaver {
 
     /// 给照片套 LUT。
     ///
-    /// 三个关键点：
-    /// 1. 保留原始像素尺寸和方向（不把旋转烘焙进像素），否则实况照片配对会失败；
-    /// 2. CIContext 显式用 sRGB 工作空间，和预览管线一致，否则成片会比预览更浓郁；
-    /// 3. 输出优先用 HEIC —— 实况视频是 HEVC，静态图用 JPEG 会导致
-    ///    PHPhotosErrorDomain 3302（资源无效），而且 HEIC 体积小得多。
-    static func applyLUT(to data: Data, lut: LUT3D?, intensity: Double) -> Data {
+    /// 关键点：
+    /// 1. 保留原始像素尺寸，不把旋转烘焙进像素（实况照片靠方向标记对齐视频）；
+    /// 2. CIContext 用 sRGB，和预览管线一致，否则成片比预览更浓；
+    /// 3. **保留原始元数据**（EXIF / MakerApple 等）。实况照片的静态图带内容标识，
+    ///    丢了这些 Photos 会判 PHPhotosErrorDomain 3302「资源无效」；
+    /// 4. 编码容器跟原图保持一致（原图 JPEG 就出 JPEG），避免格式体系不匹配。
+    static func applyLUT(to data: Data, lut: LUT3D?, intensity: Double, preserveFormat: Bool) -> Data {
         guard let lut, let filter = lut.makeFilter(intensity: intensity) else { return data }
 
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
-            return data
-        }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return data }
 
-        let orientationRaw = (properties[kCGImagePropertyOrientation] as? UInt32) ?? 1
+        let sourceProperties = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]) ?? [:]
+        let orientationRaw = (sourceProperties[kCGImagePropertyOrientation] as? UInt32) ?? 1
 
         guard let input = CIImage(data: data) else { return data }
         filter.setValue(input, forKey: kCIInputImageKey)
@@ -40,26 +39,30 @@ enum PhotoSaver {
             colorSpace: LUT3D.sRGB
         ) else { return data }
 
-        return encode(cgImage, orientation: orientationRaw) ?? data
+        // 保留原始元数据，只覆盖压缩质量和方向
+        var properties = sourceProperties
+        properties[kCGImageDestinationLossyCompressionQuality] = 0.92
+        properties[kCGImagePropertyOrientation] = orientationRaw
+        properties.removeValue(forKey: kCGImagePropertyPixelWidth)
+        properties.removeValue(forKey: kCGImagePropertyPixelHeight)
+
+        let sourceType = (CGImageSourceGetType(source) as String?) ?? UTType.jpeg.identifier
+
+        if preserveFormat {
+            // 实况照片：容器跟原图一致，最大兼容
+            return encode(cgImage, type: sourceType, properties: properties) ?? data
+        }
+
+        // 普通照片：优先 HEIC 省空间
+        if let heic = encode(cgImage, type: UTType.heic.identifier, properties: properties) {
+            return heic
+        }
+        return encode(cgImage, type: sourceType, properties: properties) ?? data
     }
 
     // MARK: - 编码
 
-    private static func encode(_ cgImage: CGImage, orientation: UInt32) -> Data? {
-        let properties: [CFString: Any] = [
-            kCGImageDestinationLossyCompressionQuality: 0.9,
-            kCGImagePropertyOrientation: orientation
-        ]
-
-        // 优先 HEIC：和实况视频的 HEVC 同族，体积也小
-        if let data = encodeWith(cgImage, type: UTType.heic.identifier, properties: properties) {
-            return data
-        }
-        // 兜底 JPEG
-        return encodeWith(cgImage, type: UTType.jpeg.identifier, properties: properties)
-    }
-
-    private static func encodeWith(_ cgImage: CGImage, type: String, properties: [CFString: Any]) -> Data? {
+    private static func encode(_ cgImage: CGImage, type: String, properties: [CFString: Any]) -> Data? {
         let output = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(
             output as CFMutableData,
@@ -76,38 +79,70 @@ enum PhotoSaver {
 
     // MARK: - 保存
 
+    enum SaveResult {
+        case livePhoto
+        case plainPhoto
+        case failed(Error?)
+    }
+
     /// 保存为普通照片，或（视频有效时）保存为实况照片。
     static func save(
         photoData: Data,
         movieURL: URL?,
-        completion: @escaping (Bool, Error?) -> Void
+        completion: @escaping (SaveResult) -> Void
     ) {
         let validMovie = validatedMovie(movieURL)
 
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
             guard status == .authorized || status == .limited else {
-                DispatchQueue.main.async { completion(false, nil) }
+                DispatchQueue.main.async { completion(.failed(nil)) }
                 return
             }
 
-            let uti = detectUTI(photoData)
-
-            PHPhotoLibrary.shared().performChanges {
-                let request = PHAssetCreationRequest.forAsset()
-
-                let photoOptions = PHAssetResourceCreationOptions()
-                photoOptions.uniformTypeIdentifier = uti
-                request.addResource(with: .photo, data: photoData, options: photoOptions)
-
-                if let validMovie {
-                    let videoOptions = PHAssetResourceCreationOptions()
-                    videoOptions.uniformTypeIdentifier = UTType.quickTimeMovie.identifier
-                    videoOptions.shouldMoveFile = false
-                    request.addResource(with: .pairedVideo, fileURL: validMovie, options: videoOptions)
+            performSave(photoData: photoData, movieURL: validMovie) { success, error in
+                if success {
+                    DispatchQueue.main.async {
+                        completion(validMovie != nil ? .livePhoto : .plainPhoto)
+                    }
+                    return
                 }
-            } completionHandler: { success, error in
-                DispatchQueue.main.async { completion(success, error) }
+
+                // 实况配对失败 → 退一步，只存普通照片
+                if validMovie != nil {
+                    performSave(photoData: photoData, movieURL: nil) { fallbackOK, fallbackError in
+                        DispatchQueue.main.async {
+                            completion(fallbackOK ? .plainPhoto : .failed(fallbackError ?? error))
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.async { completion(.failed(error)) }
+                }
             }
+        }
+    }
+
+    private static func performSave(
+        photoData: Data,
+        movieURL: URL?,
+        completion: @escaping (Bool, Error?) -> Void
+    ) {
+        let uti = detectUTI(photoData)
+
+        PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetCreationRequest.forAsset()
+
+            let photoOptions = PHAssetResourceCreationOptions()
+            photoOptions.uniformTypeIdentifier = uti
+            request.addResource(with: .photo, data: photoData, options: photoOptions)
+
+            if let movieURL {
+                let videoOptions = PHAssetResourceCreationOptions()
+                videoOptions.uniformTypeIdentifier = UTType.quickTimeMovie.identifier
+                videoOptions.shouldMoveFile = false
+                request.addResource(with: .pairedVideo, fileURL: movieURL, options: videoOptions)
+            }
+        } completionHandler: { success, error in
+            completion(success, error)
         }
     }
 
@@ -121,7 +156,7 @@ enum PhotoSaver {
         return url
     }
 
-    /// 按文件头判断真实格式，别只看扩展名
+    /// 按文件头判断真实格式
     private static func detectUTI(_ data: Data) -> String {
         if data.count >= 3, data[0] == 0xFF, data[1] == 0xD8, data[2] == 0xFF {
             return UTType.jpeg.identifier

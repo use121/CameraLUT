@@ -14,6 +14,7 @@ struct SettingsSheet: View {
                 intensitySection
                 liveSection
                 helpSection
+                debugSection
             }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
@@ -190,5 +191,18 @@ struct SettingsSheet: View {
             Text("· 逐帧套 LUT 会明显发热，建议拍完歇一会儿。")
         }
         .font(.footnote)
+    }
+
+    private var debugSection: some View {
+        Section("诊断") {
+            HStack {
+                Text("上次保存")
+                Spacer()
+                Text(model.lastSaveInfo)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .font(.footnote)
+        }
     }
 }

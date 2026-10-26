@@ -75,6 +75,7 @@ final class CameraModel: ObservableObject {
     @Published var isCapturing = false
     @Published var toast: String?
     @Published var errorText: String?
+    @Published var lastSaveInfo: String = "—"
 
     private var currentLUT: LUT3D?
     private var cancellables = Set<AnyCancellable>()
@@ -237,12 +238,17 @@ final class CameraModel: ObservableObject {
                 self.finish("拍摄失败：\(error.localizedDescription)", success: false)
 
             case .success(let payload):
-                let processed = PhotoSaver.applyLUT(to: payload.data, lut: lut, intensity: intensity)
+                let isLive = payload.movieURL != nil
+                let processed = PhotoSaver.applyLUT(
+                    to: payload.data,
+                    lut: lut,
+                    intensity: intensity,
+                    preserveFormat: isLive
+                )
 
                 guard let movieURL = payload.movieURL else {
-                    PhotoSaver.save(photoData: processed, movieURL: nil) { ok, err in
-                        if ok { self.persist(photoData: processed, movieURL: nil) }
-                        self.finish(ok ? "已保存" : (err?.localizedDescription ?? "保存失败"), success: ok)
+                    PhotoSaver.save(photoData: processed, movieURL: nil) { result in
+                        self.handle(result, photoData: processed, movie: nil)
                     }
                     return
                 }
@@ -252,23 +258,42 @@ final class CameraModel: ObservableObject {
                         .appendingPathComponent("lut-\(UUID().uuidString).mov")
                     MovieLUTRenderer.render(input: movieURL, output: output, lut: lut, intensity: intensity) { newURL in
                         let finalMovie = newURL ?? movieURL
-                        PhotoSaver.save(photoData: processed, movieURL: finalMovie) { ok, err in
-                            if ok { self.persist(photoData: processed, movieURL: finalMovie) }
-                            self.finish(ok ? "已保存实况照片" : (err?.localizedDescription ?? "保存失败"), success: ok)
+                        PhotoSaver.save(photoData: processed, movieURL: finalMovie) { result in
+                            self.handle(result, photoData: processed, movie: finalMovie)
                         }
                     }
                 } else {
-                    PhotoSaver.save(photoData: processed, movieURL: movieURL) { ok, err in
-                        if ok { self.persist(photoData: processed, movieURL: movieURL) }
-                        self.finish(ok ? "已保存实况照片" : (err?.localizedDescription ?? "保存失败"), success: ok)
+                    PhotoSaver.save(photoData: processed, movieURL: movieURL) { result in
+                        self.handle(result, photoData: processed, movie: movieURL)
                     }
                 }
             }
         }
     }
 
-    private func persist(photoData: Data, movieURL: URL?) {
-        guard let item = CaptureStore.shared.save(photoData: photoData, movieURL: movieURL) else { return }
+    private func handle(_ result: PhotoSaver.SaveResult, photoData: Data, movie: URL?) {
+        switch result {
+        case .livePhoto:
+            persist(photoData: photoData, movieURL: movie)
+            setSaveInfo("实况照片")
+            finish("已保存实况照片", success: true)
+
+        case .plainPhoto:
+            persist(photoData: photoData, movieURL: nil)
+            setSaveInfo("普通照片（实况配对失败）")
+            finish("实况配对失败，已存为普通照片", success: true)
+
+        case .failed(let error):
+            setSaveInfo("失败：\(error?.localizedDescription ?? "未知")")
+            finish("保存失败：\(error?.localizedDescription ?? "未知错误")", success: false)
+        }
+    }
+
+    private func setSaveInfo(_ text: String) {
+        DispatchQueue.main.async { self.lastSaveInfo = text }
+    }
+
+    private func persist(photoData: Data, movieURL: URL?) {        guard let item = CaptureStore.shared.save(photoData: photoData, movieURL: movieURL) else { return }
         DispatchQueue.main.async {
             self.lastCapture = item
             self.captures = CaptureStore.shared.items()
