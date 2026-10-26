@@ -257,9 +257,28 @@ final class CameraModel: ObservableObject {
                     let output = FileManager.default.temporaryDirectory
                         .appendingPathComponent("lut-\(UUID().uuidString).mov")
                     MovieLUTRenderer.render(input: movieURL, output: output, lut: lut, intensity: intensity) { newURL in
-                        let finalMovie = newURL ?? movieURL
-                        PhotoSaver.save(photoData: processed, movieURL: finalMovie) { result in
-                            self.handle(result, photoData: processed, movie: finalMovie)
+                        let gradedMovie = newURL ?? movieURL
+
+                        PhotoSaver.save(
+                            photoData: processed,
+                            movieURL: gradedMovie,
+                            allowPlainFallback: false
+                        ) { result in
+                            if case .livePhoto = result {
+                                self.handle(result, photoData: processed, movie: gradedMovie)
+                                return
+                            }
+
+                            // 逐帧视频配对失败 → 退回原始视频，至少还是实况照片
+                            PhotoSaver.save(photoData: processed, movieURL: movieURL) { retry in
+                                if case .livePhoto = retry {
+                                    self.persist(photoData: processed, movieURL: movieURL)
+                                    self.setSaveInfo("实况照片（视频未套 LUT）")
+                                    self.finish("已保存实况 · 视频套 LUT 失败，用了原视频", success: true)
+                                } else {
+                                    self.handle(retry, photoData: processed, movie: movieURL)
+                                }
+                            }
                         }
                     }
                 } else {

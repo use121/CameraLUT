@@ -33,13 +33,20 @@ enum MovieLUTRenderer {
         try? FileManager.default.removeItem(at: output)
         guard let writer = try? AVAssetWriter(outputURL: output, fileType: .mov) else { return nil }
 
+        // 沿用原视频的编码类型（实况视频一般是 HEVC），避免格式体系不一致
+        let codec: AVVideoCodecType = isHEVC(track) ? .hevc : .h264
+
         let writerSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoCodecKey: codec,
             AVVideoWidthKey: Int(size.width),
             AVVideoHeightKey: Int(size.height)
         ]
         let writerInput = AVAssetWriterInput(mediaType: .video, outputSettings: writerSettings)
         writerInput.expectsMediaDataInRealTime = false
+
+        // 关键：带上原始旋转矩阵。丢了这个，输出就是横屏视频，
+        // 和竖屏静态图尺寸/方向对不上，实况配对会失败。
+        writerInput.transform = track.preferredTransform
 
         let bufferAttrs: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -53,6 +60,11 @@ enum MovieLUTRenderer {
 
         guard writer.canAdd(writerInput) else { return nil }
         writer.add(writerInput)
+
+        // 继承原视频的元数据（含实况内容标识）
+        if !asset.metadata.isEmpty {
+            writer.metadata = asset.metadata
+        }
 
         guard reader.startReading(), writer.startWriting() else { return nil }
         writer.startSession(atSourceTime: .zero)
@@ -107,5 +119,12 @@ enum MovieLUTRenderer {
             return output
         }
         return nil
+    }
+
+    private static func isHEVC(_ track: AVAssetTrack) -> Bool {
+        guard let formats = track.formatDescriptions as? [CMFormatDescription] else { return false }
+        return formats.contains {
+            CMFormatDescriptionGetMediaSubType($0) == kCMVideoCodecType_HEVC
+        }
     }
 }

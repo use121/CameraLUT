@@ -86,9 +86,11 @@ enum PhotoSaver {
     }
 
     /// 保存为普通照片，或（视频有效时）保存为实况照片。
+    /// allowPlainFallback = false 时不自动降级成普通照片，交给调用方决定重试策略。
     static func save(
         photoData: Data,
         movieURL: URL?,
+        allowPlainFallback: Bool = true,
         completion: @escaping (SaveResult) -> Void
     ) {
         let validMovie = validatedMovie(movieURL)
@@ -108,7 +110,7 @@ enum PhotoSaver {
                 }
 
                 // 实况配对失败 → 退一步，只存普通照片
-                if validMovie != nil {
+                if validMovie != nil, allowPlainFallback {
                     performSave(photoData: photoData, movieURL: nil) { fallbackOK, fallbackError in
                         DispatchQueue.main.async {
                             completion(fallbackOK ? .plainPhoto : .failed(fallbackError ?? error))
