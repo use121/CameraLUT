@@ -58,8 +58,13 @@ struct SettingsSheet: View {
                         model.select(file)
                     } label: {
                         HStack {
-                            Text(displayName(file))
-                                .foregroundStyle(.primary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(displayName(file))
+                                    .foregroundStyle(.primary)
+                                Text(detail(for: file))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                             Spacer()
                             if model.selectedFile == file {
                                 Image(systemName: "checkmark.circle.fill")
@@ -84,7 +89,7 @@ struct SettingsSheet: View {
         } header: {
             Text("LUT")
         } footer: {
-            Text("把 .cube 文件存到「文件」App 里，然后从这里导入。导入后会复制一份到 App 内。")
+            Text("把 .cube 文件存到「文件」App 里，然后从这里导入。3D 和 1D LUT 都支持，1D 会自动转成 3D。")
         }
     }
 
@@ -131,5 +136,12 @@ struct SettingsSheet: View {
             return String(file.dropLast(5))
         }
         return file
+    }
+
+    private func detail(for file: String) -> String {
+        guard let lut = LUTStore.shared.load(fileName: file) else {
+            return "解析失败"
+        }
+        return "\(lut.source) · \(lut.dimension)³"
     }
 }

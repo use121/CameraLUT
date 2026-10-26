@@ -35,6 +35,7 @@ final class CameraSession: NSObject, ObservableObject {
     private var device: AVCaptureDevice?
     private var videoInput: AVCaptureDeviceInput?
     private var activeDelegate: PhotoCaptureDelegate?
+    private var startObserver: NSObjectProtocol?
 
     private let filterLock = NSLock()
     private var activeFilter: CIFilter?
@@ -57,6 +58,8 @@ final class CameraSession: NSObject, ObservableObject {
             guard let self else { return }
             if !self.isConfigured { self.configure() }
             if !self.session.isRunning { self.session.startRunning() }
+            // 实况支持状态要在会话真正跑起来之后才准确
+            self.refreshLivePhotoSupport()
         }
     }
 
@@ -107,14 +110,48 @@ final class CameraSession: NSObject, ObservableObject {
         applyPortraitRotation()
         session.commitConfiguration()
 
+        if startObserver == nil {
+            startObserver = NotificationCenter.default.addObserver(
+                forName: .AVCaptureSessionDidStartRunning,
+                object: session,
+                queue: nil
+            ) { [weak self] _ in
+                self?.refreshLivePhotoSupport()
+            }
+        }
+
         let discovered = discoverLenses()
 
         DispatchQueue.main.async {
             self.lenses = discovered
             self.currentLensType = .builtInWideAngleCamera
             self.zoomFactor = 1
-            self.livePhotoSupported = self.photoOutput.isLivePhotoCaptureSupported
             self.isConfigured = true
+        }
+    }
+
+    /// 会话启动后重新读取实况照片支持情况。
+    /// isLivePhotoCaptureSupported 在 session 未运行时有可能是 false，
+    /// 早期读取会把界面误判成“设备不支持”。
+    private func refreshLivePhotoSupport() {
+        let supported = photoOutput.isLivePhotoCaptureSupported
+
+        if supported && !photoOutput.isLivePhotoCaptureEnabled {
+            session.beginConfiguration()
+            photoOutput.isLivePhotoCaptureEnabled = true
+            session.commitConfiguration()
+        }
+
+        DispatchQueue.main.async {
+            if self.livePhotoSupported != supported {
+                self.livePhotoSupported = supported
+            }
+        }
+    }
+
+    deinit {
+        if let startObserver {
+            NotificationCenter.default.removeObserver(startObserver)
         }
     }
 
@@ -190,14 +227,19 @@ final class CameraSession: NSObject, ObservableObject {
         }
     }
 
-    func setZoom(_ factor: CGFloat) {
+    func setZoom(_ factor: CGFloat, animated: Bool = false) {
         sessionQueue.async { [weak self] in
             guard let self, let device = self.device else { return }
             guard (try? device.lockForConfiguration()) != nil else { return }
 
             let maxZoom = min(device.activeFormat.videoMaxZoomFactor, 15)
             let clamped = max(1, min(factor, maxZoom))
-            device.videoZoomFactor = clamped
+
+            if animated {
+                device.ramp(toVideoZoomFactor: clamped, withRate: 10)
+            } else {
+                device.videoZoomFactor = clamped
+            }
             device.unlockForConfiguration()
 
             DispatchQueue.main.async { self.zoomFactor = clamped }

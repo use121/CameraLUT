@@ -16,6 +16,7 @@ struct LUT3D: Identifiable, Equatable {
     let name: String        // 显示名（TITLE 或文件名）
     let dimension: Int
     let cubeData: Data
+    let source: String      // "3D" / "1D→3D"，用于界面提示
 
     static func == (lhs: LUT3D, rhs: LUT3D) -> Bool { lhs.id == rhs.id }
 
@@ -30,9 +31,16 @@ struct LUT3D: Identifiable, Equatable {
     // MARK: - 解析 .cube
 
     static func parse(url: URL) throws -> LUT3D {
-        let text = try String(contentsOf: url, encoding: .utf8)
-        var size = 0
+        var text = try String(contentsOf: url, encoding: .utf8)
+        // 去掉 UTF-8 BOM，否则第一行匹配不上
+        text = text.replacingOccurrences(of: "\u{FEFF}", with: "")
+
+        let fileName = url.lastPathComponent
         var title = url.deletingPathExtension().lastPathComponent
+        var size3D = 0
+        var size1D = 0
+        var domainMin: [Float] = [0, 0, 0]
+        var domainMax: [Float] = [1, 1, 1]
         var values: [Float] = []
 
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -48,10 +56,22 @@ struct LUT3D: Identifiable, Equatable {
             }
             if upper.hasPrefix("LUT_3D_SIZE") {
                 let comps = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-                if comps.count >= 2, let n = Int(comps[1]) { size = n }
+                if comps.count >= 2, let n = Int(comps[1]) { size3D = n }
                 continue
             }
-            if upper.hasPrefix("LUT_1D_SIZE") || upper.hasPrefix("DOMAIN_MIN") || upper.hasPrefix("DOMAIN_MAX") {
+            if upper.hasPrefix("LUT_1D_SIZE") {
+                let comps = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+                if comps.count >= 2, let n = Int(comps[1]) { size1D = n }
+                continue
+            }
+            if upper.hasPrefix("DOMAIN_MIN") {
+                let comps = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).compactMap { Float($0) }
+                if comps.count >= 3 { domainMin = Array(comps[0...2]) }
+                continue
+            }
+            if upper.hasPrefix("DOMAIN_MAX") {
+                let comps = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).compactMap { Float($0) }
+                if comps.count >= 3 { domainMax = Array(comps[0...2]) }
                 continue
             }
 
@@ -63,13 +83,44 @@ struct LUT3D: Identifiable, Equatable {
             }
         }
 
-        guard size > 1 else {
-            throw LUTError.invalid("没有找到 LUT_3D_SIZE，可能不是 3D LUT 文件")
+        guard !values.isEmpty else {
+            throw LUTError.invalid("文件里没有读到颜色数据")
         }
 
+        values = normalize(values, min: domainMin, max: domainMax)
+
+        if size3D > 1 {
+            return try build3D(title: title, fileName: fileName, size: size3D, values: values)
+        }
+        if size1D > 1 {
+            return try build1D(title: title, fileName: fileName, size: size1D, values: values)
+        }
+        throw LUTError.invalid("没有找到 LUT_3D_SIZE 或 LUT_1D_SIZE，文件可能不完整")
+    }
+
+    // MARK: - 归一化
+
+    private static func normalize(_ values: [Float], min lo: [Float], max hi: [Float]) -> [Float] {
+        guard lo != [0, 0, 0] || hi != [1, 1, 1] else { return values }
+
+        var out = values
+        for i in stride(from: 0, to: out.count, by: 3) {
+            for c in 0..<3 {
+                let range = hi[c] - lo[c]
+                if range > 0 {
+                    out[i + c] = (out[i + c] - lo[c]) / range
+                }
+            }
+        }
+        return out
+    }
+
+    // MARK: - 3D
+
+    private static func build3D(title: String, fileName: String, size: Int, values: [Float]) throws -> LUT3D {
         let count = size * size * size
         guard values.count >= count * 3 else {
-            throw LUTError.invalid("LUT 数据不完整：需要 \(count) 组，实际 \(values.count / 3) 组")
+            throw LUTError.invalid("3D LUT 数据不完整：需要 \(count) 组，实际 \(values.count / 3) 组")
         }
 
         var floats = [Float]()
@@ -82,13 +133,35 @@ struct LUT3D: Identifiable, Equatable {
         }
 
         let data = floats.withUnsafeBufferPointer { Data(buffer: $0) }
+        return LUT3D(id: fileName, name: title, dimension: size, cubeData: data, source: "3D")
+    }
 
-        return LUT3D(
-            id: url.lastPathComponent,
-            name: title,
-            dimension: size,
-            cubeData: data
-        )
+    // MARK: - 1D → 3D
+
+    /// 把 1D LUT 转成等尺寸的 3D LUT：输出 (r,g,b) = (表[r].r, 表[g].g, 表[b].b)。
+    private static func build1D(title: String, fileName: String, size: Int, values: [Float]) throws -> LUT3D {
+        guard values.count >= size * 3 else {
+            throw LUTError.invalid("1D LUT 数据不完整：需要 \(size) 组，实际 \(values.count / 3) 组")
+        }
+
+        let count = size * size * size
+        var floats = [Float]()
+        floats.reserveCapacity(count * 4)
+
+        // CIColorCube 要求 r 变化最快：外层 b，中层 g，内层 r
+        for b in 0..<size {
+            for g in 0..<size {
+                for r in 0..<size {
+                    floats.append(values[r * 3])
+                    floats.append(values[g * 3 + 1])
+                    floats.append(values[b * 3 + 2])
+                    floats.append(1.0)
+                }
+            }
+        }
+
+        let data = floats.withUnsafeBufferPointer { Data(buffer: $0) }
+        return LUT3D(id: fileName, name: title, dimension: size, cubeData: data, source: "1D→3D")
     }
 }
 
@@ -99,6 +172,7 @@ final class LUTStore {
 
     private let folder: URL
     private let selectedKey = "selectedLUTFileName"
+    private var cache: [String: LUT3D] = [:]
 
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -111,27 +185,25 @@ final class LUTStore {
         set { UserDefaults.standard.set(newValue, forKey: selectedKey) }
     }
 
-    /// 已导入的 LUT 文件名列表
     func listFiles() -> [String] {
         (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?
             .filter { $0.lowercased().hasSuffix(".cube") }
             .sorted() ?? []
     }
 
-    /// 把外部选中的 .cube 复制进来
     @discardableResult
     func importFile(from url: URL) throws -> String {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
 
         let data = try Data(contentsOf: url)
-        var target = folder.appendingPathComponent(url.lastPathComponent)
+        let target = folder.appendingPathComponent(url.lastPathComponent)
 
-        // 同名覆盖
         if FileManager.default.fileExists(atPath: target.path) {
             try? FileManager.default.removeItem(at: target)
         }
         try data.write(to: target)
+        cache[target.lastPathComponent] = nil
 
         return target.lastPathComponent
     }
@@ -140,13 +212,17 @@ final class LUTStore {
         folder.appendingPathComponent(fileName)
     }
 
+    /// 带缓存地加载；解析失败返回 nil。
     func load(fileName: String) -> LUT3D? {
+        if let cached = cache[fileName] { return cached }
         guard let lut = try? LUT3D.parse(url: url(for: fileName)) else { return nil }
-        return LUT3D(id: fileName, name: lut.name, dimension: lut.dimension, cubeData: lut.cubeData)
+        cache[fileName] = lut
+        return lut
     }
 
     func delete(fileName: String) {
         try? FileManager.default.removeItem(at: url(for: fileName))
+        cache[fileName] = nil
         if selectedFileName == fileName { selectedFileName = nil }
     }
 }

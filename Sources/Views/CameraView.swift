@@ -3,8 +3,13 @@ import AVFoundation
 
 struct CameraView: View {
     @StateObject private var model = CameraModel()
+
     @State private var showSettings = false
+    @State private var showGallery = false
     @State private var baseZoom: CGFloat = 1
+    @State private var lastThumb: UIImage?
+
+    @Namespace private var lensNS
 
     var body: some View {
         ZStack {
@@ -12,25 +17,23 @@ struct CameraView: View {
 
             MetalPreview(renderer: model.renderer)
                 .ignoresSafeArea()
+                .allowsHitTesting(false)
+
+            // 手势层：放在预览之上、控件之下，捏合变焦不会被 MTKView 吞掉
+            Color.clear
                 .contentShape(Rectangle())
+                .ignoresSafeArea()
                 .gesture(zoomGesture)
 
             VStack(spacing: 0) {
                 topBar
-                    .padding(.horizontal, 18)
+                    .padding(.horizontal, 16)
                     .padding(.top, 8)
 
                 Spacer()
 
-                if model.zoomFactor > 1.05 {
-                    Text(model.zoomLabel)
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.yellow)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .padding(.bottom, 10)
-                }
+                zoomControl
+                    .padding(.bottom, 12)
 
                 lensBar
                     .padding(.bottom, 16)
@@ -40,42 +43,63 @@ struct CameraView: View {
                     .padding(.bottom, 28)
             }
 
-            if let toast = model.toast {
-                VStack {
-                    Text(toast)
-                        .font(.system(size: 13, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .background(.ultraThinMaterial, in: Capsule())
-                    Spacer()
-                }
-                .padding(.top, 90)
-                .allowsHitTesting(false)
-                .transition(.opacity)
-            }
-
-            if let error = model.errorText {
-                VStack {
-                    Spacer()
-                    Text(error)
-                        .font(.system(size: 13, design: .rounded))
-                        .foregroundStyle(.white)
-                        .multilineTextAlignment(.center)
-                        .padding(14)
-                        .background(.red.opacity(0.8), in: RoundedRectangle(cornerRadius: 14))
-                        .padding(.horizontal, 30)
-                        .padding(.bottom, 200)
-                }
-            }
+            toastLayer
+            errorLayer
         }
         .sheet(isPresented: $showSettings) {
             SettingsSheet(model: model)
         }
-        .onAppear(perform: requestAndStart)
+        .sheet(isPresented: $showGallery) {
+            GalleryView(model: model)
+        }
+        .onAppear {
+            requestAndStart()
+            lastThumb = model.lastCapture.flatMap { CaptureStore.shared.thumbnail(for: $0, maxSize: 160) }
+        }
         .onDisappear { model.stop() }
         .onChange(of: model.currentLensType) { _, _ in
             baseZoom = 1
+        }
+        .onChange(of: model.lastCapture) { _, item in
+            lastThumb = item.flatMap { CaptureStore.shared.thumbnail(for: $0, maxSize: 160) }
+        }
+    }
+
+    // MARK: - 浮层
+
+    @ViewBuilder
+    private var toastLayer: some View {
+        if let toast = model.toast {
+            VStack {
+                Text(toast)
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial, in: Capsule())
+                Spacer()
+            }
+            .padding(.top, 92)
+            .allowsHitTesting(false)
+            .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var errorLayer: some View {
+        if let error = model.errorText {
+            VStack {
+                Spacer()
+                Text(error)
+                    .font(.system(size: 13, design: .rounded))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .padding(14)
+                    .background(.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 14))
+                    .padding(.horizontal, 30)
+                    .padding(.bottom, 210)
+                    .onTapGesture { model.errorText = nil }
+            }
         }
     }
 
@@ -116,6 +140,29 @@ struct CameraView: View {
             Spacer()
 
             Button {
+                showGallery = true
+            } label: {
+                ZStack {
+                    if let lastThumb {
+                        Image(uiImage: lastThumb)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Image(systemName: "photo.on.rectangle")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.75))
+                    }
+                }
+                .frame(width: 38, height: 38)
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(.white.opacity(0.28), lineWidth: 0.8)
+                }
+            }
+            .buttonStyle(.plain)
+
+            Button {
                 showSettings = true
             } label: {
                 Image(systemName: "slider.horizontal.3")
@@ -128,6 +175,44 @@ struct CameraView: View {
         }
     }
 
+    // MARK: - 变焦条
+
+    @ViewBuilder
+    private var zoomControl: some View {
+        if model.zoomFactor > 1.05 {
+            HStack(spacing: 10) {
+                Image(systemName: "minus.magnifyingglass")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.6))
+
+                Slider(
+                    value: Binding(
+                        get: { Double(model.zoomFactor) },
+                        set: { model.setZoom(CGFloat($0)) }
+                    ),
+                    in: 1...15
+                )
+                .tint(.yellow)
+
+                Image(systemName: "plus.magnifyingglass")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.6))
+
+                Text(model.zoomLabel)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.yellow)
+                    .frame(width: 38, alignment: .trailing)
+                    .monospacedDigit()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: Capsule())
+            .padding(.horizontal, 40)
+            .transition(.opacity.combined(with: .scale(scale: 0.92)))
+            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: model.zoomFactor > 1.05)
+        }
+    }
+
     // MARK: - 镜头
 
     @ViewBuilder
@@ -135,25 +220,31 @@ struct CameraView: View {
         if model.lenses.count > 1 {
             HStack(spacing: 6) {
                 ForEach(model.lenses) { lens in
+                    let active = model.currentLensType == lens.type
+
                     Button {
                         baseZoom = 1
                         model.switchLens(lens.type)
                     } label: {
                         Text(lens.label)
                             .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundStyle(model.currentLensType == lens.type ? Color.black : Color.white)
-                            .frame(width: 44, height: 30)
+                            .foregroundStyle(active ? Color.black : Color.white)
+                            .frame(width: 46, height: 30)
                             .background {
-                                if model.currentLensType == lens.type {
-                                    Capsule().fill(.yellow)
+                                if active {
+                                    Capsule()
+                                        .fill(.yellow)
+                                        .matchedGeometryEffect(id: "lensHighlight", in: lensNS)
                                 } else {
-                                    Capsule().fill(.ultraThinMaterial)
+                                    Capsule()
+                                        .fill(.ultraThinMaterial)
                                 }
                             }
                     }
                     .buttonStyle(.plain)
                 }
             }
+            .animation(.spring(response: 0.42, dampingFraction: 0.72), value: model.currentLensType)
         }
     }
 
@@ -194,6 +285,8 @@ struct CameraView: View {
             }
             .buttonStyle(.plain)
             .disabled(model.isCapturing)
+            .scaleEffect(model.isCapturing ? 0.94 : 1)
+            .animation(.spring(response: 0.28, dampingFraction: 0.7), value: model.isCapturing)
 
             Spacer()
 

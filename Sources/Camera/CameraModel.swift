@@ -41,6 +41,9 @@ final class CameraModel: ObservableObject {
     @Published var currentLensType: AVCaptureDevice.DeviceType = .builtInWideAngleCamera
     @Published var zoomFactor: CGFloat = 1
 
+    @Published var captures: [CaptureItem] = []
+    @Published var lastCapture: CaptureItem?
+
     @Published var isCapturing = false
     @Published var toast: String?
     @Published var errorText: String?
@@ -72,6 +75,8 @@ final class CameraModel: ObservableObject {
             .assign(to: &$zoomFactor)
 
         refreshLUTs()
+        captures = CaptureStore.shared.items()
+        lastCapture = captures.first
         selectedFile = LUTStore.shared.selectedFileName
         applyLUT()
     }
@@ -89,13 +94,21 @@ final class CameraModel: ObservableObject {
     }
 
     func applyLUT() {
-        guard lutEnabled, let file = selectedFile, let lut = LUTStore.shared.load(fileName: file) else {
+        guard let file = selectedFile else {
             currentLUT = nil
             session.setLUT(nil, enabled: false)
             return
         }
+
+        guard let lut = LUTStore.shared.load(fileName: file) else {
+            currentLUT = nil
+            session.setLUT(nil, enabled: false)
+            errorText = "这个 LUT 解析失败，可能不是标准 .cube 文件：\(file)"
+            return
+        }
+
         currentLUT = lut
-        session.setLUT(lut, enabled: true)
+        session.setLUT(lut, enabled: lutEnabled)
     }
 
     func importLUT(from url: URL) {
@@ -127,14 +140,21 @@ final class CameraModel: ObservableObject {
         return LUTStore.shared.load(fileName: file)?.name ?? file
     }
 
+    var selectedDetail: String {
+        guard let file = selectedFile, let lut = LUTStore.shared.load(fileName: file) else {
+            return "未选择"
+        }
+        return "\(lut.source) · \(lut.dimension)³"
+    }
+
     // MARK: - 镜头与变焦
 
     func switchLens(_ type: AVCaptureDevice.DeviceType) {
         session.switchLens(to: type)
     }
 
-    func setZoom(_ factor: CGFloat) {
-        session.setZoom(factor)
+    func setZoom(_ factor: CGFloat, animated: Bool = false) {
+        session.setZoom(factor, animated: animated)
     }
 
     var zoomLabel: String {
@@ -168,6 +188,7 @@ final class CameraModel: ObservableObject {
 
                 guard let movieURL = payload.movieURL else {
                     PhotoSaver.save(photoData: processed, movieURL: nil) { ok, err in
+                        if ok { self.persist(photoData: processed, movieURL: nil) }
                         self.finish(ok ? "已保存" : (err?.localizedDescription ?? "保存失败"), success: ok)
                     }
                     return
@@ -179,15 +200,26 @@ final class CameraModel: ObservableObject {
                     MovieLUTRenderer.render(input: movieURL, output: output, lut: lut) { newURL in
                         let finalMovie = newURL ?? movieURL
                         PhotoSaver.save(photoData: processed, movieURL: finalMovie) { ok, err in
+                            if ok { self.persist(photoData: processed, movieURL: finalMovie) }
                             self.finish(ok ? "已保存实况照片" : (err?.localizedDescription ?? "保存失败"), success: ok)
                         }
                     }
                 } else {
                     PhotoSaver.save(photoData: processed, movieURL: movieURL) { ok, err in
+                        if ok { self.persist(photoData: processed, movieURL: movieURL) }
                         self.finish(ok ? "已保存实况照片" : (err?.localizedDescription ?? "保存失败"), success: ok)
                     }
                 }
             }
+        }
+    }
+
+    /// 存一份到 App 内的图库（相册之外），供应用内预览
+    private func persist(photoData: Data, movieURL: URL?) {
+        guard let item = CaptureStore.shared.save(photoData: photoData, movieURL: movieURL) else { return }
+        DispatchQueue.main.async {
+            self.lastCapture = item
+            self.captures = CaptureStore.shared.items()
         }
     }
 
