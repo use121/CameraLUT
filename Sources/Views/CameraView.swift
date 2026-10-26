@@ -6,10 +6,16 @@ struct CameraView: View {
 
     @State private var showSettings = false
     @State private var showGallery = false
-    @State private var baseZoom: CGFloat = 1
     @State private var lastThumb: UIImage?
 
+    // 手势基准值
+    @State private var pinchBase: CGFloat = 1
+    @State private var lensDragBase: CGFloat?
+
     @Namespace private var lensNS
+
+    private let minZoom: CGFloat = 0.5
+    private let maxZoom: CGFloat = 15
 
     var body: some View {
         ZStack {
@@ -19,11 +25,11 @@ struct CameraView: View {
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
 
-            // 手势层：放在预览之上、控件之下，捏合变焦不会被 MTKView 吞掉
+            // 手势层：放在预览之上、控件之下，捏合不会被 MTKView 吞掉
             Color.clear
                 .contentShape(Rectangle())
                 .ignoresSafeArea()
-                .gesture(zoomGesture)
+                .gesture(pinchGesture)
 
             VStack(spacing: 0) {
                 topBar
@@ -54,12 +60,10 @@ struct CameraView: View {
         }
         .onAppear {
             requestAndStart()
+            pinchBase = model.virtualZoom
             lastThumb = model.lastCapture.flatMap { CaptureStore.shared.thumbnail(for: $0, maxSize: 160) }
         }
         .onDisappear { model.stop() }
-        .onChange(of: model.currentLensType) { _, _ in
-            baseZoom = 1
-        }
         .onChange(of: model.lastCapture) { _, item in
             lastThumb = item.flatMap { CaptureStore.shared.thumbnail(for: $0, maxSize: 160) }
         }
@@ -103,15 +107,30 @@ struct CameraView: View {
         }
     }
 
-    // MARK: - 变焦手势
+    // MARK: - 手势
 
-    private var zoomGesture: some Gesture {
+    private var pinchGesture: some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                model.setZoom(baseZoom * value.magnification)
+                model.setVirtualZoom(pinchBase * value.magnification)
             }
             .onEnded { value in
-                baseZoom = max(1, min(baseZoom * value.magnification, 15))
+                pinchBase = max(minZoom, min(pinchBase * value.magnification, maxZoom))
+            }
+    }
+
+    /// 按住镜头条左右拖动：指数映射，手感和原生一致
+    private var lensDragGesture: some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                if lensDragBase == nil { lensDragBase = model.virtualZoom }
+                guard let base = lensDragBase else { return }
+                let factor = pow(2.0, Double(value.translation.width) / 140.0)
+                model.setVirtualZoom(CGFloat(Double(base) * factor))
+            }
+            .onEnded { _ in
+                lensDragBase = nil
+                pinchBase = model.virtualZoom
             }
     }
 
@@ -179,7 +198,7 @@ struct CameraView: View {
 
     @ViewBuilder
     private var zoomControl: some View {
-        if model.zoomFactor > 1.05 {
+        if abs(model.virtualZoom - 1) > 0.05 {
             HStack(spacing: 10) {
                 Image(systemName: "minus.magnifyingglass")
                     .font(.system(size: 11, weight: .medium))
@@ -187,10 +206,10 @@ struct CameraView: View {
 
                 Slider(
                     value: Binding(
-                        get: { Double(model.zoomFactor) },
-                        set: { model.setZoom(CGFloat($0)) }
+                        get: { log2(Double(max(model.virtualZoom, minZoom))) },
+                        set: { model.setVirtualZoom(CGFloat(pow(2, $0))) }
                     ),
-                    in: 1...15
+                    in: log2(Double(minZoom))...log2(Double(maxZoom))
                 )
                 .tint(.yellow)
 
@@ -201,7 +220,7 @@ struct CameraView: View {
                 Text(model.zoomLabel)
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .foregroundStyle(.yellow)
-                    .frame(width: 38, alignment: .trailing)
+                    .frame(width: 42, alignment: .trailing)
                     .monospacedDigit()
             }
             .padding(.horizontal, 14)
@@ -209,7 +228,7 @@ struct CameraView: View {
             .background(.ultraThinMaterial, in: Capsule())
             .padding(.horizontal, 40)
             .transition(.opacity.combined(with: .scale(scale: 0.92)))
-            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: model.zoomFactor > 1.05)
+            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: abs(model.virtualZoom - 1) > 0.05)
         }
     }
 
@@ -223,8 +242,8 @@ struct CameraView: View {
                     let active = model.currentLensType == lens.type
 
                     Button {
-                        baseZoom = 1
-                        model.switchLens(lens.type)
+                        pinchBase = lens.base
+                        model.selectLens(lens)
                     } label: {
                         Text(lens.label)
                             .font(.system(size: 12, weight: .semibold, design: .rounded))
@@ -245,6 +264,7 @@ struct CameraView: View {
                 }
             }
             .animation(.spring(response: 0.42, dampingFraction: 0.72), value: model.currentLensType)
+            .gesture(lensDragGesture)
         }
     }
 
@@ -266,8 +286,6 @@ struct CameraView: View {
                 .background(.ultraThinMaterial, in: Circle())
             }
             .buttonStyle(.plain)
-            .disabled(!model.livePhotoSupported)
-            .opacity(model.livePhotoSupported ? 1 : 0.35)
 
             Spacer()
 

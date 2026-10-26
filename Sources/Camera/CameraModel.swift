@@ -3,6 +3,13 @@ import Combine
 import UIKit
 import AVFoundation
 
+struct LUTInfo: Identifiable, Equatable {
+    let id: String        // 文件名
+    let name: String      // 显示名
+    let detail: String    // "3D · 33³" / "解析失败"
+    let ok: Bool
+}
+
 final class CameraModel: ObservableObject {
     enum LivePhotoLUTMode: String, CaseIterable, Identifiable {
         case staticOnly
@@ -28,18 +35,39 @@ final class CameraModel: ObservableObject {
     let session = CameraSession()
     let renderer = PreviewRenderer()
 
+    // MARK: - LUT
+
     @Published var lutFiles: [String] = []
+    @Published var lutInfos: [LUTInfo] = []
     @Published var selectedFile: String?
+    @Published var selectedName: String = "无 LUT"
+
     @Published var lutEnabled: Bool = true {
         didSet { applyLUT() }
     }
+
+    /// 0...1，LUT 作用强度
+    @Published var lutIntensity: Double = 1.0 {
+        didSet {
+            guard abs(oldValue - lutIntensity) > 0.001 else { return }
+            applyLUT()
+        }
+    }
+
+    // MARK: - 实况
+
     @Published var livePhotoEnabled: Bool = false
-    @Published var livePhotoLUTMode: LivePhotoLUTMode = .staticOnly
     @Published var livePhotoSupported: Bool = false
+    @Published var livePhotoArmed: Bool = false
+    @Published var livePhotoLUTMode: LivePhotoLUTMode = .staticOnly
+
+    // MARK: - 镜头与变焦
 
     @Published var lenses: [LensOption] = []
     @Published var currentLensType: AVCaptureDevice.DeviceType = .builtInWideAngleCamera
-    @Published var zoomFactor: CGFloat = 1
+    @Published var virtualZoom: CGFloat = 1
+
+    // MARK: - 拍照与图库
 
     @Published var captures: [CaptureItem] = []
     @Published var lastCapture: CaptureItem?
@@ -58,6 +86,10 @@ final class CameraModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .assign(to: &$livePhotoSupported)
 
+        session.$livePhotoEnabled
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$livePhotoArmed)
+
         session.$errorMessage
             .receive(on: DispatchQueue.main)
             .assign(to: &$errorText)
@@ -70,21 +102,48 @@ final class CameraModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .assign(to: &$currentLensType)
 
-        session.$zoomFactor
+        session.$virtualZoom
             .receive(on: DispatchQueue.main)
-            .assign(to: &$zoomFactor)
+            .assign(to: &$virtualZoom)
 
-        refreshLUTs()
         captures = CaptureStore.shared.items()
         lastCapture = captures.first
+
         selectedFile = LUTStore.shared.selectedFileName
+        refreshLUTs()
         applyLUT()
     }
 
-    // MARK: - LUT
+    // MARK: - LUT 管理
 
     func refreshLUTs() {
-        lutFiles = LUTStore.shared.listFiles()
+        let files = LUTStore.shared.listFiles()
+        lutFiles = files
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            var infos: [LUTInfo] = []
+            for file in files {
+                if let lut = LUTStore.shared.load(fileName: file) {
+                    infos.append(LUTInfo(
+                        id: file,
+                        name: lut.name,
+                        detail: "\(lut.source) · \(lut.dimension)³",
+                        ok: true
+                    ))
+                } else {
+                    let quick = LUTStore.shared.quickInfo(fileName: file)
+                    infos.append(LUTInfo(
+                        id: file,
+                        name: quick?.title ?? file,
+                        detail: "解析失败",
+                        ok: false
+                    ))
+                }
+            }
+            DispatchQueue.main.async {
+                self.lutInfos = infos
+            }
+        }
     }
 
     func select(_ file: String?) {
@@ -96,19 +155,22 @@ final class CameraModel: ObservableObject {
     func applyLUT() {
         guard let file = selectedFile else {
             currentLUT = nil
-            session.setLUT(nil, enabled: false)
+            selectedName = "无 LUT"
+            session.setLUT(nil, enabled: false, intensity: lutIntensity)
             return
         }
 
         guard let lut = LUTStore.shared.load(fileName: file) else {
             currentLUT = nil
-            session.setLUT(nil, enabled: false)
+            selectedName = file
+            session.setLUT(nil, enabled: false, intensity: lutIntensity)
             errorText = "这个 LUT 解析失败，可能不是标准 .cube 文件：\(file)"
             return
         }
 
         currentLUT = lut
-        session.setLUT(lut, enabled: lutEnabled)
+        selectedName = lut.name
+        session.setLUT(lut, enabled: lutEnabled, intensity: lutIntensity)
     }
 
     func importLUT(from url: URL) {
@@ -135,30 +197,20 @@ final class CameraModel: ObservableObject {
         refreshLUTs()
     }
 
-    var selectedDisplayName: String {
-        guard let file = selectedFile else { return "无 LUT" }
-        return LUTStore.shared.load(fileName: file)?.name ?? file
-    }
-
-    var selectedDetail: String {
-        guard let file = selectedFile, let lut = LUTStore.shared.load(fileName: file) else {
-            return "未选择"
-        }
-        return "\(lut.source) · \(lut.dimension)³"
-    }
+    var selectedDisplayName: String { selectedName }
 
     // MARK: - 镜头与变焦
 
-    func switchLens(_ type: AVCaptureDevice.DeviceType) {
-        session.switchLens(to: type)
+    func setVirtualZoom(_ value: CGFloat, animated: Bool = false) {
+        session.setVirtualZoom(value, animated: animated)
     }
 
-    func setZoom(_ factor: CGFloat, animated: Bool = false) {
-        session.setZoom(factor, animated: animated)
+    func selectLens(_ lens: LensOption) {
+        session.setVirtualZoom(lens.base, animated: true)
     }
 
     var zoomLabel: String {
-        String(format: "%.1f×", Double(zoomFactor))
+        String(format: "%.1f×", Double(virtualZoom))
     }
 
     // MARK: - 生命周期
@@ -174,6 +226,7 @@ final class CameraModel: ObservableObject {
 
         let wantLive = livePhotoEnabled && livePhotoSupported
         let lut = lutEnabled ? currentLUT : nil
+        let intensity = lutIntensity
         let mode = livePhotoLUTMode
 
         session.capturePhoto(livePhoto: wantLive) { [weak self] result in
@@ -184,7 +237,7 @@ final class CameraModel: ObservableObject {
                 self.finish("拍摄失败：\(error.localizedDescription)", success: false)
 
             case .success(let payload):
-                let processed = PhotoSaver.applyLUT(to: payload.data, lut: lut)
+                let processed = PhotoSaver.applyLUT(to: payload.data, lut: lut, intensity: intensity)
 
                 guard let movieURL = payload.movieURL else {
                     PhotoSaver.save(photoData: processed, movieURL: nil) { ok, err in
@@ -197,7 +250,7 @@ final class CameraModel: ObservableObject {
                 if mode == .perFrame, let lut {
                     let output = FileManager.default.temporaryDirectory
                         .appendingPathComponent("lut-\(UUID().uuidString).mov")
-                    MovieLUTRenderer.render(input: movieURL, output: output, lut: lut) { newURL in
+                    MovieLUTRenderer.render(input: movieURL, output: output, lut: lut, intensity: intensity) { newURL in
                         let finalMovie = newURL ?? movieURL
                         PhotoSaver.save(photoData: processed, movieURL: finalMovie) { ok, err in
                             if ok { self.persist(photoData: processed, movieURL: finalMovie) }
@@ -214,7 +267,6 @@ final class CameraModel: ObservableObject {
         }
     }
 
-    /// 存一份到 App 内的图库（相册之外），供应用内预览
     private func persist(photoData: Data, movieURL: URL?) {
         guard let item = CaptureStore.shared.save(photoData: photoData, movieURL: movieURL) else { return }
         DispatchQueue.main.async {

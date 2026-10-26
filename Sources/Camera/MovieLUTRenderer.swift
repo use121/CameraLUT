@@ -6,14 +6,14 @@ import CoreVideo
 /// 失败时返回 nil，调用方回退到原始视频。
 enum MovieLUTRenderer {
 
-    static func render(input: URL, output: URL, lut: LUT3D, completion: @escaping (URL?) -> Void) {
+    static func render(input: URL, output: URL, lut: LUT3D, intensity: Double, completion: @escaping (URL?) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = process(input: input, output: output, lut: lut)
+            let result = process(input: input, output: output, lut: lut, intensity: intensity)
             DispatchQueue.main.async { completion(result) }
         }
     }
 
-    private static func process(input: URL, output: URL, lut: LUT3D) -> URL? {
+    private static func process(input: URL, output: URL, lut: LUT3D, intensity: Double) -> URL? {
         let asset = AVURLAsset(url: input)
 
         guard let track = asset.tracks(withMediaType: .video).first else { return nil }
@@ -57,9 +57,13 @@ enum MovieLUTRenderer {
         guard reader.startReading(), writer.startWriting() else { return nil }
         writer.startSession(atSourceTime: .zero)
 
-        let ciContext = CIContext(options: [.cacheIntermediates: false])
-        let filter = lut.makeFilter()
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let ciContext = CIContext(options: [
+            .workingColorSpace: LUT3D.sRGB,
+            .outputColorSpace: LUT3D.sRGB,
+            .cacheIntermediates: false
+        ])
+        let filter = lut.makeFilter(intensity: intensity)
+        let colorSpace = LUT3D.sRGB
 
         let group = DispatchGroup()
         group.enter()

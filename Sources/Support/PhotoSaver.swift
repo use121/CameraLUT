@@ -6,10 +6,11 @@ import ImageIO
 enum PhotoSaver {
 
     /// 给照片套 LUT。
-    /// 关键：保留原始像素尺寸和 EXIF 方向，不把旋转烘焙进像素——
-    /// 否则实况照片的静态图和视频尺寸/方向不一致，PHPhotoLibrary 配对会抛异常直接崩溃。
-    static func applyLUT(to data: Data, lut: LUT3D?) -> Data {
-        guard let lut, let filter = lut.makeFilter() else { return data }
+    /// 关键两点：
+    /// 1. 保留原始像素尺寸和 EXIF 方向（不把旋转烘焙进像素），否则实况照片配对会崩；
+    /// 2. CIContext 显式指定 sRGB 工作空间，和预览管线保持一致，否则成片会比预览更浓郁。
+    static func applyLUT(to data: Data, lut: LUT3D?, intensity: Double) -> Data {
+        guard let lut, let filter = lut.makeFilter(intensity: intensity) else { return data }
 
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
@@ -23,8 +24,17 @@ enum PhotoSaver {
         filter.setValue(input, forKey: kCIInputImageKey)
         guard let output = filter.outputImage else { return data }
 
-        let context = CIContext(options: [.cacheIntermediates: false])
-        guard let cgImage = context.createCGImage(output, from: output.extent) else { return data }
+        let context = CIContext(options: [
+            .workingColorSpace: LUT3D.sRGB,
+            .outputColorSpace: LUT3D.sRGB,
+            .cacheIntermediates: false
+        ])
+        guard let cgImage = context.createCGImage(
+            output,
+            from: output.extent,
+            format: .RGBA8,
+            colorSpace: LUT3D.sRGB
+        ) else { return data }
 
         let image = UIImage(cgImage: cgImage, scale: 1, orientation: uiOrientation)
         return image.jpegData(compressionQuality: 0.95) ?? data

@@ -18,7 +18,8 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
         if let d = d {
             commandQueue = d.makeCommandQueue()
             context = CIContext(mtlDevice: d, options: [
-                .workingColorSpace: CGColorSpaceCreateDeviceRGB(),
+                .workingColorSpace: LUT3D.sRGB,
+                .outputColorSpace: LUT3D.sRGB,
                 .cacheIntermediates: false
             ])
         } else {
@@ -97,7 +98,7 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
             to: drawable.texture,
             commandBuffer: buffer,
             bounds: target,
-            colorSpace: CGColorSpaceCreateDeviceRGB()
+            colorSpace: LUT3D.sRGB
         )
 
         buffer.present(drawable)

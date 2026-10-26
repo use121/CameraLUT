@@ -11,6 +11,7 @@ struct SettingsSheet: View {
         NavigationStack {
             Form {
                 lutSection
+                intensitySection
                 liveSection
                 helpSection
             }
@@ -49,24 +50,24 @@ struct SettingsSheet: View {
 
     private var lutSection: some View {
         Section {
-            if model.lutFiles.isEmpty {
+            if model.lutInfos.isEmpty {
                 Text("还没有导入 LUT")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(model.lutFiles, id: \.self) { file in
+                ForEach(model.lutInfos) { info in
                     Button {
-                        model.select(file)
+                        model.select(info.id)
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(displayName(file))
-                                    .foregroundStyle(.primary)
-                                Text(detail(for: file))
+                                Text(info.name)
+                                    .foregroundStyle(info.ok ? .primary : .secondary)
+                                Text(info.detail)
                                     .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(info.ok ? Color.secondary : Color.red)
                             }
                             Spacer()
-                            if model.selectedFile == file {
+                            if model.selectedFile == info.id {
                                 Image(systemName: "checkmark.circle.fill")
                                     .foregroundStyle(.tint)
                             }
@@ -76,7 +77,7 @@ struct SettingsSheet: View {
                 }
                 .onDelete { indexSet in
                     for index in indexSet {
-                        model.deleteLUT(model.lutFiles[index])
+                        model.deleteLUT(model.lutInfos[index].id)
                     }
                 }
             }
@@ -89,8 +90,57 @@ struct SettingsSheet: View {
         } header: {
             Text("LUT")
         } footer: {
-            Text("把 .cube 文件存到「文件」App 里，然后从这里导入。3D 和 1D LUT 都支持，1D 会自动转成 3D。")
+            Text("把 .cube 存到「文件」App 再从这里导入。3D 和 1D 都支持，1D 会自动转成 3D。")
         }
+    }
+
+    // MARK: - 强度
+
+    private var intensitySection: some View {
+        Section {
+            HStack {
+                Text("强度")
+                Spacer()
+                Text("\(Int((model.lutIntensity * 100).rounded()))%")
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            Slider(value: $model.lutIntensity, in: 0...1)
+                .tint(.yellow)
+
+            HStack(spacing: 8) {
+                quickButton("原始", 0)
+                quickButton("25%", 0.25)
+                quickButton("50%", 0.5)
+                quickButton("75%", 0.75)
+                quickButton("全量", 1)
+            }
+            .padding(.vertical, 2)
+        } header: {
+            Text("LUT 强度")
+        } footer: {
+            Text("0% 等于不套 LUT，100% 是全量。往中间调可以保留更多原始色彩，避免过浓。")
+        }
+    }
+
+    private func quickButton(_ title: String, _ value: Double) -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) {
+                model.lutIntensity = value
+            }
+        } label: {
+            Text(title)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .background {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(abs(model.lutIntensity - value) < 0.01 ? Color.yellow.opacity(0.35) : Color.secondary.opacity(0.12))
+                }
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - 实况
@@ -98,7 +148,22 @@ struct SettingsSheet: View {
     private var liveSection: some View {
         Section {
             Toggle("拍摄实况照片", isOn: $model.livePhotoEnabled)
-                .disabled(!model.livePhotoSupported)
+
+            HStack {
+                Text("设备支持")
+                Spacer()
+                Text(model.livePhotoSupported ? "支持" : "不支持")
+                    .foregroundStyle(model.livePhotoSupported ? .green : .red)
+            }
+            .font(.footnote)
+
+            HStack {
+                Text("拍摄通道")
+                Spacer()
+                Text(model.livePhotoArmed ? "已就绪" : "未就绪")
+                    .foregroundStyle(model.livePhotoArmed ? .green : .orange)
+            }
+            .font(.footnote)
 
             Picker("LUT 应用范围", selection: $model.livePhotoLUTMode) {
                 ForEach(CameraModel.LivePhotoLUTMode.allCases) { mode in
@@ -112,11 +177,7 @@ struct SettingsSheet: View {
         } header: {
             Text("实况照片")
         } footer: {
-            if !model.livePhotoSupported {
-                Text("当前设备不支持实况照片拍摄。")
-            } else {
-                Text("实况照片 = 一张静态图 + 一段短视频。切换应用范围会立刻生效，下次拍摄就用新设置。")
-            }
+            Text("实况照片 = 一张静态图 + 一段短视频。切换应用范围立刻生效，下次拍摄就用新设置。")
         }
     }
 
@@ -124,24 +185,10 @@ struct SettingsSheet: View {
 
     private var helpSection: some View {
         Section("说明") {
-            Text("· 预览和成片都按当前 LUT 处理，所见即所得。")
+            Text("· 预览和成片走同一条色彩管线，所见即所得。")
             Text("· 关掉 LUT 开关就是原始色彩。")
             Text("· 逐帧套 LUT 会明显发热，建议拍完歇一会儿。")
         }
         .font(.footnote)
-    }
-
-    private func displayName(_ file: String) -> String {
-        if file.lowercased().hasSuffix(".cube") {
-            return String(file.dropLast(5))
-        }
-        return file
-    }
-
-    private func detail(for file: String) -> String {
-        guard let lut = LUTStore.shared.load(fileName: file) else {
-            return "解析失败"
-        }
-        return "\(lut.source) · \(lut.dimension)³"
     }
 }

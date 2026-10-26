@@ -1,5 +1,6 @@
 import Foundation
 import CoreImage
+import CoreGraphics
 
 enum LUTError: LocalizedError {
     case invalid(String)
@@ -12,27 +13,72 @@ enum LUTError: LocalizedError {
 }
 
 struct LUT3D: Identifiable, Equatable {
-    let id: String          // 文件名，用作唯一标识
-    let name: String        // 显示名（TITLE 或文件名）
+    let id: String
+    let name: String
     let dimension: Int
     let cubeData: Data
-    let source: String      // "3D" / "1D→3D"，用于界面提示
+    let source: String
+
+    /// 原始 RGB 三元组，用于按强度重新生成插值后的 cube
+    let baseValues: [Float]
 
     static func == (lhs: LUT3D, rhs: LUT3D) -> Bool { lhs.id == rhs.id }
 
-    /// 生成 CIColorCube 滤镜。每次调用返回新实例，可安全复用同一份 cubeData。
-    func makeFilter() -> CIFilter? {
-        guard let filter = CIFilter(name: "CIColorCube") else { return nil }
+    static let sRGB = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+
+    /// 生成 CIColorCube 滤镜。
+    /// 统一用 CIColorCubeWithColorSpace 并指定 sRGB —— 这样 LUT 在 gamma 空间里生效，
+    /// 和视频调色软件里的表现一致，也和预览管线一致。
+    func makeFilter(intensity: Double = 1.0) -> CIFilter? {
+        guard let filter = CIFilter(name: "CIColorCubeWithColorSpace") else { return nil }
+
+        let clamped = max(0, min(1, intensity))
+        let data: Data
+        if clamped >= 0.999 {
+            data = cubeData
+        } else if clamped <= 0.001 {
+            return nil
+        } else {
+            data = Self.blendedCube(baseValues: baseValues, dimension: dimension, intensity: Float(clamped))
+        }
+
         filter.setValue(NSNumber(value: dimension), forKey: "inputCubeDimension")
-        filter.setValue(cubeData, forKey: "inputCubeData")
+        filter.setValue(data, forKey: "inputCubeData")
+        filter.setValue(Self.sRGB, forKey: "inputColorSpace")
         return filter
+    }
+
+    /// 把 LUT 按比例往「原始色」方向插值。
+    /// identity 在该网格点上就是 (r,g,b) 归一化坐标，所以直接线性插值即可。
+    private static func blendedCube(baseValues: [Float], dimension: Int, intensity: Float) -> Data {
+        let n = dimension
+        let count = n * n * n
+        let denom = Float(max(n - 1, 1))
+
+        var floats = [Float](repeating: 0, count: count * 4)
+
+        for i in 0..<count {
+            let r = Float(i % n) / denom
+            let g = Float((i / n) % n) / denom
+            let b = Float(i / (n * n)) / denom
+
+            let lr = baseValues[i * 3]
+            let lg = baseValues[i * 3 + 1]
+            let lb = baseValues[i * 3 + 2]
+
+            floats[i * 4]     = r + (lr - r) * intensity
+            floats[i * 4 + 1] = g + (lg - g) * intensity
+            floats[i * 4 + 2] = b + (lb - b) * intensity
+            floats[i * 4 + 3] = 1
+        }
+
+        return floats.withUnsafeBufferPointer { Data(buffer: $0) }
     }
 
     // MARK: - 解析 .cube
 
     static func parse(url: URL) throws -> LUT3D {
         var text = try String(contentsOf: url, encoding: .utf8)
-        // 去掉 UTF-8 BOM，否则第一行匹配不上
         text = text.replacingOccurrences(of: "\u{FEFF}", with: "")
 
         let fileName = url.lastPathComponent
@@ -98,8 +144,6 @@ struct LUT3D: Identifiable, Equatable {
         throw LUTError.invalid("没有找到 LUT_3D_SIZE 或 LUT_1D_SIZE，文件可能不完整")
     }
 
-    // MARK: - 归一化
-
     private static func normalize(_ values: [Float], min lo: [Float], max hi: [Float]) -> [Float] {
         guard lo != [0, 0, 0] || hi != [1, 1, 1] else { return values }
 
@@ -115,53 +159,72 @@ struct LUT3D: Identifiable, Equatable {
         return out
     }
 
-    // MARK: - 3D
-
     private static func build3D(title: String, fileName: String, size: Int, values: [Float]) throws -> LUT3D {
         let count = size * size * size
         guard values.count >= count * 3 else {
             throw LUTError.invalid("3D LUT 数据不完整：需要 \(count) 组，实际 \(values.count / 3) 组")
         }
 
+        let base = Array(values[0..<(count * 3)])
+
         var floats = [Float]()
         floats.reserveCapacity(count * 4)
         for i in 0..<count {
-            floats.append(values[i * 3])
-            floats.append(values[i * 3 + 1])
-            floats.append(values[i * 3 + 2])
+            floats.append(base[i * 3])
+            floats.append(base[i * 3 + 1])
+            floats.append(base[i * 3 + 2])
             floats.append(1.0)
         }
 
         let data = floats.withUnsafeBufferPointer { Data(buffer: $0) }
-        return LUT3D(id: fileName, name: title, dimension: size, cubeData: data, source: "3D")
+        return LUT3D(
+            id: fileName,
+            name: title,
+            dimension: size,
+            cubeData: data,
+            source: "3D",
+            baseValues: base
+        )
     }
 
-    // MARK: - 1D → 3D
-
-    /// 把 1D LUT 转成等尺寸的 3D LUT：输出 (r,g,b) = (表[r].r, 表[g].g, 表[b].b)。
+    /// 1D LUT 转 3D：输出 (r,g,b) = (表[r].r, 表[g].g, 表[b].b)
     private static func build1D(title: String, fileName: String, size: Int, values: [Float]) throws -> LUT3D {
         guard values.count >= size * 3 else {
             throw LUTError.invalid("1D LUT 数据不完整：需要 \(size) 组，实际 \(values.count / 3) 组")
         }
 
         let count = size * size * size
+        var base = [Float]()
+        base.reserveCapacity(count * 3)
         var floats = [Float]()
         floats.reserveCapacity(count * 4)
 
-        // CIColorCube 要求 r 变化最快：外层 b，中层 g，内层 r
         for b in 0..<size {
             for g in 0..<size {
                 for r in 0..<size {
-                    floats.append(values[r * 3])
-                    floats.append(values[g * 3 + 1])
-                    floats.append(values[b * 3 + 2])
+                    let rr = values[r * 3]
+                    let gg = values[g * 3 + 1]
+                    let bb = values[b * 3 + 2]
+                    base.append(rr)
+                    base.append(gg)
+                    base.append(bb)
+                    floats.append(rr)
+                    floats.append(gg)
+                    floats.append(bb)
                     floats.append(1.0)
                 }
             }
         }
 
         let data = floats.withUnsafeBufferPointer { Data(buffer: $0) }
-        return LUT3D(id: fileName, name: title, dimension: size, cubeData: data, source: "1D→3D")
+        return LUT3D(
+            id: fileName,
+            name: title,
+            dimension: size,
+            cubeData: data,
+            source: "1D→3D",
+            baseValues: base
+        )
     }
 }
 
@@ -173,6 +236,7 @@ final class LUTStore {
     private let folder: URL
     private let selectedKey = "selectedLUTFileName"
     private var cache: [String: LUT3D] = [:]
+    private let cacheLock = NSLock()
 
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -203,7 +267,10 @@ final class LUTStore {
             try? FileManager.default.removeItem(at: target)
         }
         try data.write(to: target)
+
+        cacheLock.lock()
         cache[target.lastPathComponent] = nil
+        cacheLock.unlock()
 
         return target.lastPathComponent
     }
@@ -212,17 +279,53 @@ final class LUTStore {
         folder.appendingPathComponent(fileName)
     }
 
-    /// 带缓存地加载；解析失败返回 nil。
     func load(fileName: String) -> LUT3D? {
-        if let cached = cache[fileName] { return cached }
+        cacheLock.lock()
+        let cached = cache[fileName]
+        cacheLock.unlock()
+        if let cached { return cached }
+
         guard let lut = try? LUT3D.parse(url: url(for: fileName)) else { return nil }
+
+        cacheLock.lock()
         cache[fileName] = lut
+        cacheLock.unlock()
         return lut
+    }
+
+    /// 读取基本信息但不做完整解析，用于列表展示（避免界面卡顿）
+    func quickInfo(fileName: String) -> (title: String, kind: String)? {
+        let fileURL = url(for: fileName)
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
+        defer { try? handle.close() }
+
+        let head = handle.readData(ofLength: 4096)
+        guard let text = String(data: head, encoding: .utf8) else { return nil }
+
+        var kind = "未知"
+        if text.uppercased().contains("LUT_3D_SIZE") {
+            kind = "3D"
+        } else if text.uppercased().contains("LUT_1D_SIZE") {
+            kind = "1D"
+        }
+
+        var title = (fileName as NSString).deletingPathExtension
+        if let range = text.range(of: "TITLE") {
+            let rest = text[range.upperBound...]
+            if let first = rest.firstIndex(of: "\""),
+               let second = rest[rest.index(after: first)...].firstIndex(of: "\"") {
+                title = String(rest[rest.index(after: first)..<second])
+            }
+        }
+
+        return (title, kind)
     }
 
     func delete(fileName: String) {
         try? FileManager.default.removeItem(at: url(for: fileName))
+        cacheLock.lock()
         cache[fileName] = nil
+        cacheLock.unlock()
         if selectedFileName == fileName { selectedFileName = nil }
     }
 }
