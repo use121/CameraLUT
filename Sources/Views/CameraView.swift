@@ -1,11 +1,13 @@
 import SwiftUI
 import AVFoundation
+import UIKit
 
 struct CameraView: View {
     @StateObject private var model = CameraModel()
 
     @State private var showSettings = false
     @State private var showGallery = false
+    @State private var showManual = false
     @State private var lastThumb: UIImage?
 
     // 手势基准
@@ -18,10 +20,15 @@ struct CameraView: View {
     @State private var hideTask: Task<Void, Never>?
 
     @Namespace private var lensNS
-    @Namespace private var glassNS
 
     private var minZoom: CGFloat { model.lenses.first?.base ?? 1 }
     private let maxZoom: CGFloat = 15
+
+    /// 动态读取安全区，不再硬编码
+    private var safeInsets: UIEdgeInsets {
+        (UIApplication.shared.connectedScenes.first as? UIWindowScene)?
+            .windows.first?.safeAreaInsets ?? .zero
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -48,19 +55,29 @@ struct CameraView: View {
                 VStack(spacing: 0) {
                     topBar
                         .padding(.horizontal, 16)
-                        .padding(.top, 54)
+                        .padding(.top, safeInsets.top + 6)
 
                     Spacer()
 
+                    if showManual {
+                        ManualPanel(model: model)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 10)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+
                     exposureControl
                     zoomControl
-                    lensBar
-                        .padding(.top, 12)
-                        .padding(.bottom, 16)
+
+                    if !showManual {
+                        lensBar
+                            .padding(.top, 12)
+                    }
 
                     bottomBar
                         .padding(.horizontal, 24)
-                        .padding(.bottom, 38)
+                        .padding(.top, 14)
+                        .padding(.bottom, safeInsets.bottom + 12)
                 }
 
                 toastLayer
@@ -124,9 +141,7 @@ struct CameraView: View {
         }
     }
 
-    /// 屏幕点 → 设备坐标。
-    /// 画面按 aspect-fill 铺满，先还原成画面内归一化坐标；
-    /// 视频旋转了 90°，设备 (0,0) 落在竖屏画面的右上角，所以要做一次转置。
+    /// 屏幕点 → 设备坐标。视频旋转 90°，设备 (0,0) 落在竖屏画面右上角。
     private func devicePoint(from location: CGPoint, in size: CGSize) -> CGPoint {
         let aspect = model.frameAspect
         guard size.width > 0, size.height > 0, aspect > 0 else {
@@ -169,7 +184,7 @@ struct CameraView: View {
                     .glassEffect(.regular, in: .capsule)
                 Spacer()
             }
-            .padding(.top, 92)
+            .padding(.top, safeInsets.top + 72)
             .allowsHitTesting(false)
             .transition(.opacity)
         }
@@ -187,7 +202,7 @@ struct CameraView: View {
                     .padding(14)
                     .glassEffect(.regular.tint(.red.opacity(0.55)), in: .rect(cornerRadius: 16))
                     .padding(.horizontal, 30)
-                    .padding(.bottom, 210)
+                    .padding(.bottom, 220)
                     .onTapGesture { model.errorText = nil }
             }
         }
@@ -222,26 +237,54 @@ struct CameraView: View {
     // MARK: - 顶部
 
     private var topBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Button {
                 model.lutEnabled.toggle()
             } label: {
-                HStack(spacing: 7) {
+                HStack(spacing: 6) {
                     Circle()
                         .fill(model.lutEnabled ? Color.green : Color.white.opacity(0.4))
                         .frame(width: 7, height: 7)
-                    Text(model.lutEnabled ? model.selectedDisplayName : "LUT 已关闭")
+                    Text(model.lutEnabled ? model.selectedDisplayName : "LUT 关")
                         .font(.system(size: 12, weight: .medium, design: .rounded))
                         .lineLimit(1)
                 }
                 .foregroundStyle(.primary)
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 13)
                 .padding(.vertical, 9)
             }
             .buttonStyle(.plain)
             .glassEffect(.regular, in: .capsule)
 
             Spacer()
+
+            Button {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    showManual.toggle()
+                }
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(showManual ? Color.yellow : Color.primary)
+                    .frame(width: 40, height: 40)
+            }
+            .buttonStyle(.plain)
+            .glassEffect(
+                showManual ? .regular.tint(.yellow.opacity(0.3)).interactive() : .regular,
+                in: Circle()
+            )
+
+            Button {
+                pinchBase = 1
+                model.switchCamera()
+            } label: {
+                Image(systemName: "arrow.triangle.2.circlepath.camera")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 40, height: 40)
+            }
+            .buttonStyle(.plain)
+            .glassEffect(.regular, in: Circle())
 
             Button {
                 showGallery = true
@@ -266,7 +309,7 @@ struct CameraView: View {
             Button {
                 showSettings = true
             } label: {
-                Image(systemName: "slider.horizontal.3")
+                Image(systemName: "gearshape")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.primary)
                     .frame(width: 40, height: 40)
@@ -347,6 +390,7 @@ struct CameraView: View {
             .padding(.vertical, 8)
             .glassEffect(.regular, in: .capsule)
             .padding(.horizontal, 40)
+            .padding(.bottom, 8)
             .transition(.opacity.combined(with: .scale(scale: 0.92)))
             .animation(.spring(response: 0.35, dampingFraction: 0.8), value: abs(model.virtualZoom - 1) > 0.05)
         }

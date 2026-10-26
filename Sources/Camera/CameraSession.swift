@@ -10,14 +10,13 @@ enum CaptureError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noData: return "没有拿到照片数据"
-        case .noDevice: return "找不到后置摄像头"
+        case .noDevice: return "找不到摄像头"
         case .movieFailed: return "实况照片视频处理失败"
         }
     }
 }
 
 struct LensOption: Identifiable, Hashable {
-    /// 等效焦段（0.5 / 1 / 3 …）
     let base: CGFloat
     let label: String
 
@@ -26,9 +25,8 @@ struct LensOption: Identifiable, Hashable {
 
 /// 采集层。
 ///
-/// 变焦走**虚拟多摄设备**（builtInTripleCamera / DualWideCamera），
-/// 由系统在内部完成镜头切换和交叉淡化 —— 全程不重建会话，所以是丝滑的。
-/// 早期版本手动 removeInput/addInput 切物理镜头，每次都要重配会话，必然顿挫。
+/// 变焦走虚拟多摄设备（TripleCamera / DualWideCamera），系统内部完成镜头切换与交叉淡化。
+/// 手动控制走 AVCaptureDevice 的官方 locked 模式（custom exposure / locked WB / locked focus）。
 final class CameraSession: NSObject, ObservableObject {
     let session = AVCaptureSession()
     let photoOutput = AVCapturePhotoOutput()
@@ -42,33 +40,47 @@ final class CameraSession: NSObject, ObservableObject {
     private var activeDelegate: PhotoCaptureDelegate?
     private var startObserver: NSObjectProtocol?
 
-    /// 虚拟设备里最广那颗镜头的等效焦段（有超广角就是 0.5）
+    private var currentPosition: AVCaptureDevice.Position = .back
     private var zoomBase: CGFloat = 1
+    private var didReportFrameSize = false
 
     private let filterLock = NSLock()
     private var activeFilter: CIFilter?
 
     weak var renderer: PreviewRenderer?
 
+    // MARK: - 状态
+
     @Published var isConfigured = false
     @Published var livePhotoSupported = false
     @Published var livePhotoEnabled = false
     @Published var errorMessage: String?
 
+    @Published var position: AVCaptureDevice.Position = .back
     @Published var lenses: [LensOption] = []
     @Published var virtualZoom: CGFloat = 1
 
-    /// 曝光补偿（官方 API：exposureTargetBias）
     @Published var exposureBias: Float = 0
     @Published var exposureRange: ClosedRange<Float> = -8...8
-
-    /// 对焦点（设备坐标系，0...1）
     @Published var focusPoint: CGPoint?
-
-    /// 竖屏取景画面的宽高比，用于把屏幕点换算成设备点
     @Published var frameAspect: CGFloat = 9.0 / 16.0
 
-    private var didReportFrameSize = false
+    // MARK: - 手动控制状态
+
+    @Published var manualExposure = false
+    @Published var manualWhiteBalance = false
+    @Published var manualFocus = false
+
+    @Published var iso: Float = 100
+    @Published var isoRange: ClosedRange<Float> = 34...3200
+
+    @Published var shutterSeconds: Double = 1.0 / 60.0
+    @Published var shutterRange: ClosedRange<Double> = 1.0 / 8000.0 ... 1.0
+
+    @Published var whiteBalanceTemperature: Float = 5000
+    let whiteBalanceRange: ClosedRange<Float> = 2500...9000
+
+    @Published var lensPosition: Float = 0.5
 
     private let maxVirtualZoom: CGFloat = 15
 
@@ -94,7 +106,7 @@ final class CameraSession: NSObject, ObservableObject {
         session.beginConfiguration()
         session.sessionPreset = .photo
 
-        guard let dev = pickBackDevice() else {
+        guard let dev = pickDevice(for: .back) else {
             DispatchQueue.main.async { self.errorMessage = CaptureError.noDevice.localizedDescription }
             session.commitConfiguration()
             return
@@ -125,7 +137,7 @@ final class CameraSession: NSObject, ObservableObject {
         videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
         if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
 
-        applyPortraitRotation()
+        applyConnections()
         session.commitConfiguration()
 
         if startObserver == nil {
@@ -138,39 +150,68 @@ final class CameraSession: NSObject, ObservableObject {
             }
         }
 
+        applyDeviceState(dev)
+    }
+
+    /// 后摄优先虚拟多摄设备（一颗设备覆盖全部焦段）
+    private func pickDevice(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
+        let candidates: [AVCaptureDevice.DeviceType]
+
+        if position == .front {
+            candidates = [.builtInTrueDepthCamera, .builtInWideAngleCamera]
+        } else {
+            candidates = [
+                .builtInTripleCamera,
+                .builtInDualWideCamera,
+                .builtInDualCamera,
+                .builtInWideAngleCamera
+            ]
+        }
+
+        for type in candidates {
+            if let dev = AVCaptureDevice.default(type, for: .video, position: position) {
+                return dev
+            }
+        }
+        return nil
+    }
+
+    /// 切换设备后同步所有能力范围到界面
+    private func applyDeviceState(_ dev: AVCaptureDevice) {
         let base = constituentBase(for: dev)
         let options = buildLenses(for: dev, base: base)
 
-        // 起始停在 1×（主摄），虚拟设备用 videoZoomFactor = 1 / base 表示
         if (try? dev.lockForConfiguration()) != nil {
             dev.videoZoomFactor = max(1, 1 / base)
             dev.unlockForConfiguration()
         }
 
+        let isoLower = dev.activeFormat.minISO
+        let isoUpper = dev.activeFormat.maxISO
+        let minDuration = max(dev.activeFormat.minExposureDuration.seconds, 1.0 / 8000.0)
+        let maxDuration = min(dev.activeFormat.maxExposureDuration.seconds, 1.0)
+
         DispatchQueue.main.async {
             self.zoomBase = base
             self.lenses = options
             self.virtualZoom = 1
+
             self.exposureRange = dev.minExposureTargetBias...dev.maxExposureTargetBias
             self.exposureBias = dev.exposureTargetBias
+
+            self.isoRange = isoLower...isoUpper
+            self.iso = min(max(dev.iso, isoLower), isoUpper)
+
+            self.shutterRange = minDuration...maxDuration
+            self.shutterSeconds = min(max(dev.exposureDuration.seconds, minDuration), maxDuration)
+
+            self.manualExposure = false
+            self.manualWhiteBalance = false
+            self.manualFocus = false
+            self.lensPosition = 0.5
+
             self.isConfigured = true
         }
-    }
-
-    /// 优先虚拟多摄设备：一颗设备覆盖全部焦段，系统负责无缝切换
-    private func pickBackDevice() -> AVCaptureDevice? {
-        let candidates: [AVCaptureDevice.DeviceType] = [
-            .builtInTripleCamera,
-            .builtInDualWideCamera,
-            .builtInDualCamera,
-            .builtInWideAngleCamera
-        ]
-        for type in candidates {
-            if let dev = AVCaptureDevice.default(type, for: .video, position: .back) {
-                return dev
-            }
-        }
-        return nil
     }
 
     private func constituentBase(for device: AVCaptureDevice) -> CGFloat {
@@ -222,12 +263,20 @@ final class CameraSession: NSObject, ObservableObject {
         }
     }
 
-    private func applyPortraitRotation() {
-        if let conn = videoOutput.connection(with: .video), conn.isVideoRotationAngleSupported(90) {
-            conn.videoRotationAngle = 90
+    private func applyConnections() {
+        if let conn = videoOutput.connection(with: .video) {
+            if conn.isVideoRotationAngleSupported(90) { conn.videoRotationAngle = 90 }
+            if conn.isVideoMirroringSupported {
+                conn.automaticallyAdjustsVideoMirroring = false
+                conn.isVideoMirrored = (currentPosition == .front)
+            }
         }
-        if let conn = photoOutput.connection(with: .video), conn.isVideoRotationAngleSupported(90) {
-            conn.videoRotationAngle = 90
+        if let conn = photoOutput.connection(with: .video) {
+            if conn.isVideoRotationAngleSupported(90) { conn.videoRotationAngle = 90 }
+            if conn.isVideoMirroringSupported {
+                conn.automaticallyAdjustsVideoMirroring = false
+                conn.isVideoMirrored = false
+            }
         }
     }
 
@@ -237,9 +286,42 @@ final class CameraSession: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - 前后摄切换
+
+    func switchCamera() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+
+            let target: AVCaptureDevice.Position = (self.currentPosition == .back) ? .front : .back
+            guard let newDevice = self.pickDevice(for: target),
+                  let newInput = try? AVCaptureDeviceInput(device: newDevice) else { return }
+
+            self.session.beginConfiguration()
+            if let current = self.videoInput { self.session.removeInput(current) }
+
+            guard self.session.canAddInput(newInput) else {
+                if let current = self.videoInput { self.session.addInput(current) }
+                self.session.commitConfiguration()
+                return
+            }
+
+            self.session.addInput(newInput)
+            self.videoInput = newInput
+            self.device = newDevice
+            self.currentPosition = target
+
+            self.applyConnections()
+            self.session.commitConfiguration()
+
+            DispatchQueue.main.async { self.position = target }
+
+            self.applyDeviceState(newDevice)
+            self.refreshLivePhotoSupport()
+        }
+    }
+
     // MARK: - 变焦
 
-    /// 只改 videoZoomFactor，不碰会话配置。虚拟设备内部自己切镜头 + 交叉淡化。
     func setVirtualZoom(_ value: CGFloat, animated: Bool = false) {
         let vz = max(zoomBase, min(value, maxVirtualZoom))
 
@@ -265,9 +347,8 @@ final class CameraSession: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - 对焦与曝光（官方 API）
+    // MARK: - 对焦与测光
 
-    /// 点按对焦 + 测光。point 为设备坐标系（左上 0,0，右下 1,1）。
     func focus(at point: CGPoint) {
         sessionQueue.async { [weak self] in
             guard let self, let device = self.device else { return }
@@ -296,9 +377,10 @@ final class CameraSession: NSObject, ObservableObject {
 
             DispatchQueue.main.async {
                 self.focusPoint = clamped
+                self.manualFocus = false
+                self.manualExposure = false
             }
 
-            // 单次对焦完成后回到连续对焦，和原生相机一致
             self.sessionQueue.asyncAfter(deadline: .now() + 2.5) { [weak self] in
                 guard let self, let device = self.device else { return }
                 guard (try? device.lockForConfiguration()) != nil else { return }
@@ -313,7 +395,6 @@ final class CameraSession: NSObject, ObservableObject {
         }
     }
 
-    /// 曝光补偿
     func setExposureBias(_ bias: Float) {
         sessionQueue.async { [weak self] in
             guard let self, let device = self.device else { return }
@@ -324,6 +405,109 @@ final class CameraSession: NSObject, ObservableObject {
                     self.exposureBias = clamped
                 }
             }
+        }
+    }
+
+    // MARK: - 手动控制
+
+    /// 手动曝光：同时锁定快门与 ISO（官方 custom exposure 模式）
+    func setManualExposure(iso newISO: Float, shutter seconds: Double) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.device else { return }
+            guard (try? device.lockForConfiguration()) != nil else { return }
+
+            let clampedISO = min(max(newISO, device.activeFormat.minISO), device.activeFormat.maxISO)
+            let minSeconds = device.activeFormat.minExposureDuration.seconds
+            let maxSeconds = device.activeFormat.maxExposureDuration.seconds
+            let clampedSeconds = min(max(seconds, minSeconds), maxSeconds)
+
+            let duration = CMTimeMakeWithSeconds(clampedSeconds, preferredTimescale: 1_000_000)
+            device.setExposureModeCustom(duration: duration, iso: clampedISO, completionHandler: nil)
+            device.unlockForConfiguration()
+
+            DispatchQueue.main.async {
+                self.iso = clampedISO
+                self.shutterSeconds = clampedSeconds
+                self.manualExposure = true
+            }
+        }
+    }
+
+    func setExposureAuto() {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.device else { return }
+            guard (try? device.lockForConfiguration()) != nil else { return }
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
+            device.unlockForConfiguration()
+            DispatchQueue.main.async { self.manualExposure = false }
+        }
+    }
+
+    /// 手动白平衡：按色温换算增益后锁定
+    func setManualWhiteBalance(temperature: Float) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.device else { return }
+            guard (try? device.lockForConfiguration()) != nil else { return }
+
+            let clamped = min(max(temperature, 2500), 9000)
+            let values = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(temperature: clamped, tint: 0)
+            var gains = device.deviceWhiteBalanceGains(for: values)
+
+            let maxGain = device.maxWhiteBalanceGain
+            gains.redGain = min(max(gains.redGain, 1), maxGain)
+            gains.greenGain = min(max(gains.greenGain, 1), maxGain)
+            gains.blueGain = min(max(gains.blueGain, 1), maxGain)
+
+            device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
+            device.unlockForConfiguration()
+
+            DispatchQueue.main.async {
+                self.whiteBalanceTemperature = clamped
+                self.manualWhiteBalance = true
+            }
+        }
+    }
+
+    func setWhiteBalanceAuto() {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.device else { return }
+            guard (try? device.lockForConfiguration()) != nil else { return }
+            if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                device.whiteBalanceMode = .continuousAutoWhiteBalance
+            }
+            device.unlockForConfiguration()
+            DispatchQueue.main.async { self.manualWhiteBalance = false }
+        }
+    }
+
+    /// 手动对焦：lensPosition 0（近）… 1（远）
+    func setManualFocus(_ value: Float) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.device else { return }
+            guard (try? device.lockForConfiguration()) != nil else { return }
+
+            let clamped = min(max(value, 0), 1)
+            device.setFocusModeLocked(lensPosition: clamped, completionHandler: nil)
+            device.unlockForConfiguration()
+
+            DispatchQueue.main.async {
+                self.lensPosition = clamped
+                self.manualFocus = true
+            }
+        }
+    }
+
+    func setFocusAuto() {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.device else { return }
+            guard (try? device.lockForConfiguration()) != nil else { return }
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+            }
+            device.unlockForConfiguration()
+            DispatchQueue.main.async { self.manualFocus = false }
         }
     }
 

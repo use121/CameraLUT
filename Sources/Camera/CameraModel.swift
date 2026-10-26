@@ -71,6 +71,27 @@ final class CameraModel: ObservableObject {
     @Published var focusPoint: CGPoint?
     @Published var frameAspect: CGFloat = 9.0 / 16.0
 
+    // MARK: - 前摄与手动控制
+
+    @Published var position: AVCaptureDevice.Position = .back
+
+    @Published var manualExposure = false
+    @Published var manualWhiteBalance = false
+    @Published var manualFocus = false
+
+    @Published var iso: Float = 100
+    @Published var isoRange: ClosedRange<Float> = 34...3200
+
+    @Published var shutterSeconds: Double = 1.0 / 60.0
+    @Published var shutterRange: ClosedRange<Double> = 1.0 / 8000.0 ... 1.0
+
+    @Published var whiteBalanceTemperature: Float = 5000
+    let whiteBalanceRange: ClosedRange<Float> = 2500...9000
+
+    @Published var lensPosition: Float = 0.5
+
+    var isFront: Bool { position == .front }
+
     /// 当前焦段落在哪颗镜头的范围里，用于高亮
     var activeLensBase: CGFloat {
         let sorted = lenses.sorted { $0.base < $1.base }
@@ -134,6 +155,46 @@ final class CameraModel: ObservableObject {
         session.$frameAspect
             .receive(on: DispatchQueue.main)
             .assign(to: &$frameAspect)
+
+        session.$position
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$position)
+
+        session.$manualExposure
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$manualExposure)
+
+        session.$manualWhiteBalance
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$manualWhiteBalance)
+
+        session.$manualFocus
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$manualFocus)
+
+        session.$iso
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$iso)
+
+        session.$isoRange
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$isoRange)
+
+        session.$shutterSeconds
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$shutterSeconds)
+
+        session.$shutterRange
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$shutterRange)
+
+        session.$whiteBalanceTemperature
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$whiteBalanceTemperature)
+
+        session.$lensPosition
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$lensPosition)
 
         captures = CaptureStore.shared.items()
         lastCapture = captures.first
@@ -250,6 +311,55 @@ final class CameraModel: ObservableObject {
 
     var exposureLabel: String {
         String(format: "%+.1f", Double(exposureBias))
+    }
+
+    // MARK: - 前摄与手动控制
+
+    func switchCamera() {
+        session.switchCamera()
+    }
+
+    func setISO(_ value: Float) {
+        session.setManualExposure(iso: value, shutter: shutterSeconds)
+    }
+
+    func setShutter(_ seconds: Double) {
+        session.setManualExposure(iso: iso, shutter: seconds)
+    }
+
+    func resetExposureAuto() {
+        session.setExposureAuto()
+    }
+
+    func setWhiteBalance(_ temperature: Float) {
+        session.setManualWhiteBalance(temperature: temperature)
+    }
+
+    func resetWhiteBalanceAuto() {
+        session.setWhiteBalanceAuto()
+    }
+
+    func setManualFocus(_ value: Float) {
+        session.setManualFocus(value)
+    }
+
+    func resetFocusAuto() {
+        session.setFocusAuto()
+    }
+
+    var shutterLabel: String {
+        if shutterSeconds >= 1 {
+            return String(format: "%.1fs", shutterSeconds)
+        }
+        return String(format: "1/%.0f", 1.0 / max(shutterSeconds, 0.0001))
+    }
+
+    var isoLabel: String {
+        String(format: "%.0f", Double(iso))
+    }
+
+    var whiteBalanceLabel: String {
+        String(format: "%.0fK", Double(whiteBalanceTemperature))
     }
 
     var zoomLabel: String {
