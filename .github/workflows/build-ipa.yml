@@ -48,9 +48,7 @@ jobs:
         run: |
           APP_PATH="build/Build/Products/Release-iphoneos/CameraLUT.app"
           ls -la "$APP_PATH" || true
-          mkdir -p Payload
-          cp -R "$APP_PATH" Payload/
-          zip -qry CameraLUT.ipa Payload
+          python3 scripts/make_ipa.py "$APP_PATH" CameraLUT.ipa
           ls -lh CameraLUT.ipa
 
       - name: 上传产物

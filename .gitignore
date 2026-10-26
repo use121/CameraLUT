@@ -13,6 +13,7 @@ xcuserdata/
 *.ipa
 Payload/
 _dl/
+_inspect/
 
 # 其他
 *.moved-aside
