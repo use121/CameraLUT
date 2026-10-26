@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import UIKit
+import UniformTypeIdentifiers
 
 struct CameraView: View {
     @StateObject private var model = CameraModel()
@@ -8,6 +9,7 @@ struct CameraView: View {
     @State private var showSettings = false
     @State private var showGallery = false
     @State private var showManual = false
+    @State private var showImporter = false
     @State private var lastThumb: UIImage?
 
     // 手势基准
@@ -82,10 +84,31 @@ struct CameraView: View {
         }
         .ignoresSafeArea()
         .sheet(isPresented: $showSettings) {
-            SettingsSheet(model: model)
+            SettingsSheet(model: model, showImporter: $showImporter)
         }
         .sheet(isPresented: $showGallery) {
             GalleryView(model: model)
+        }
+        .fileImporter(
+            isPresented: $showImporter,
+            allowedContentTypes: [.data, .item],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                model.importLUT(from: url)
+            case .failure(let error):
+                model.errorText = "选择文件失败：\(error.localizedDescription)"
+            }
+        }
+        .alert("提示", isPresented: Binding(
+            get: { model.errorText != nil },
+            set: { if !$0 { model.errorText = nil } }
+        )) {
+            Button("好") { model.errorText = nil }
+        } message: {
+            Text(model.errorText ?? "")
         }
         .onAppear {
             requestAndStart()
@@ -254,11 +277,9 @@ struct CameraView: View {
                     .foregroundStyle(showManual ? Color.yellow : Color.primary)
                     .frame(width: 40, height: 40)
             }
-            .buttonStyle(.pressable)
-            .glassEffect(
-                .regular.tint(showManual ? .yellow.opacity(0.3) : .clear).interactive(),
-                in: Circle()
-            )
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .tint(showManual ? Color.yellow : Color.clear)
 
             Button {
                 pinchBase = 1
@@ -269,8 +290,8 @@ struct CameraView: View {
                     .foregroundStyle(.primary)
                     .frame(width: 40, height: 40)
             }
-            .buttonStyle(.pressable)
-            .glassEffect(.regular.interactive(), in: Circle())
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
 
             Button {
                 showGallery = true
@@ -289,8 +310,8 @@ struct CameraView: View {
                 .frame(width: 40, height: 40)
                 .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
-            .buttonStyle(.pressable)
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 11))
+            .buttonStyle(.glass)
+            .buttonBorderShape(.roundedRectangle(radius: 11))
 
             Button {
                 showSettings = true
@@ -300,12 +321,12 @@ struct CameraView: View {
                     .foregroundStyle(.primary)
                     .frame(width: 40, height: 40)
             }
-            .buttonStyle(.pressable)
-            .glassEffect(.regular.interactive(), in: Circle())
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
         }
     }
 
-    /// 左上角：点击弹出 LUT 菜单直接切换
+    /// 左上角：点击弹出 LUT 菜单（Menu 自己处理点击，玻璃不加 interactive）
     private var lutMenu: some View {
         Menu {
             Picker("LUT", selection: lutSelection) {
@@ -337,7 +358,7 @@ struct CameraView: View {
             .foregroundStyle(.primary)
             .padding(.horizontal, 13)
             .padding(.vertical, 9)
-            .glassEffect(.regular.interactive(), in: .capsule)
+            .glassEffect(.regular, in: .capsule)
         }
     }
 
@@ -436,13 +457,9 @@ struct CameraView: View {
                             .foregroundStyle(active ? Color.black : Color.primary)
                             .frame(width: 46, height: 30)
                     }
-                    .buttonStyle(.pressable)
-                    .glassEffect(
-                        active
-                            ? .regular.tint(.yellow.opacity(0.85)).interactive()
-                            : .regular.interactive(),
-                        in: .capsule
-                    )
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.capsule)
+                    .tint(active ? Color.yellow : Color.clear)
                 }
             }
             .animation(.spring(response: 0.42, dampingFraction: 0.72), value: model.activeLensBase)
@@ -466,11 +483,9 @@ struct CameraView: View {
                 .foregroundStyle(model.livePhotoEnabled ? Color.yellow : Color.primary)
                 .frame(width: 54, height: 54)
             }
-            .buttonStyle(.pressable)
-            .glassEffect(
-                .regular.tint(model.livePhotoEnabled ? .yellow.opacity(0.3) : .clear).interactive(),
-                in: Circle()
-            )
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .tint(model.livePhotoEnabled ? Color.yellow : Color.clear)
 
             Spacer()
 
@@ -486,7 +501,7 @@ struct CameraView: View {
                         .frame(width: 63, height: 63)
                 }
             }
-            .buttonStyle(.pressable)
+            .buttonStyle(.plain)
             .disabled(model.isCapturing)
             .scaleEffect(model.isCapturing ? 0.94 : 1)
             .animation(.spring(response: 0.28, dampingFraction: 0.7), value: model.isCapturing)
@@ -505,11 +520,9 @@ struct CameraView: View {
                 .foregroundStyle(model.lutEnabled ? Color.green : Color.red)
                 .frame(width: 54, height: 54)
             }
-            .buttonStyle(.pressable)
-            .glassEffect(
-                .regular.tint(model.lutEnabled ? .green.opacity(0.26) : .red.opacity(0.22)).interactive(),
-                in: Circle()
-            )
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .tint(model.lutEnabled ? Color.green : Color.red)
         }
     }
 

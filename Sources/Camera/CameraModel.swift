@@ -90,6 +90,8 @@ final class CameraModel: ObservableObject {
 
     @Published var lensPosition: Float = 0.5
 
+    @Published var lensDebug: String = ""
+
     var isFront: Bool { position == .front }
 
     /// 当前焦段落在哪颗镜头的范围里，用于高亮
@@ -195,6 +197,10 @@ final class CameraModel: ObservableObject {
         session.$lensPosition
             .receive(on: DispatchQueue.main)
             .assign(to: &$lensPosition)
+
+        session.$lensDebug
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$lensDebug)
 
         captures = CaptureStore.shared.items()
         lastCapture = captures.first

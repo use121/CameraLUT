@@ -82,6 +82,9 @@ final class CameraSession: NSObject, ObservableObject {
 
     @Published var lensPosition: Float = 0.5
 
+    /// 诊断信息，方便定位机型差异
+    @Published var lensDebug: String = ""
+
     private let maxVirtualZoom: CGFloat = 15
 
     // MARK: - 生命周期
@@ -210,6 +213,8 @@ final class CameraSession: NSObject, ObservableObject {
             self.manualFocus = false
             self.lensPosition = 0.5
 
+            self.lensDebug = "\(dev.deviceType.rawValue) · 组成\(dev.constituentDevices.count) · 切换点\(dev.virtualDeviceSwitchOverVideoZoomFactors.count) · 档位\(options.count)"
+
             self.isConfigured = true
         }
     }
@@ -246,6 +251,11 @@ final class CameraSession: NSObject, ObservableObject {
         var unique: [CGFloat] = []
         for value in bases.sorted() where !unique.contains(where: { abs($0 - value) < 0.01 }) {
             unique.append(value)
+        }
+
+        // 兜底：后摄至少要给出 0.5/1/3 三个档位，否则镜头条会整条消失
+        if currentPosition == .back, unique.count <= 1 {
+            unique = [0.5, 1, 3]
         }
 
         return unique.map { LensOption(base: $0, label: formatZoom($0)) }

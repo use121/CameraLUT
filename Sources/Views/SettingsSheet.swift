@@ -1,11 +1,10 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct SettingsSheet: View {
     @ObservedObject var model: CameraModel
-    @Environment(\.dismiss) private var dismiss
+    @Binding var showImporter: Bool
 
-    @State private var showImporter = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -22,27 +21,6 @@ struct SettingsSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { dismiss() }
                 }
-            }
-            .fileImporter(
-                isPresented: $showImporter,
-                allowedContentTypes: [.item],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    guard let url = urls.first else { return }
-                    model.importLUT(from: url)
-                case .failure(let error):
-                    model.errorText = "选择文件失败：\(error.localizedDescription)"
-                }
-            }
-            .alert("提示", isPresented: Binding(
-                get: { model.errorText != nil },
-                set: { if !$0 { model.errorText = nil } }
-            )) {
-                Button("好") { model.errorText = nil }
-            } message: {
-                Text(model.errorText ?? "")
             }
         }
     }
@@ -84,7 +62,10 @@ struct SettingsSheet: View {
             }
 
             Button {
-                showImporter = true
+                dismiss()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    showImporter = true
+                }
             } label: {
                 Label("导入 .cube 文件", systemImage: "square.and.arrow.down")
             }
@@ -122,7 +103,7 @@ struct SettingsSheet: View {
         } header: {
             Text("LUT 强度")
         } footer: {
-            Text("0% 等于不套 LUT，100% 是全量。往中间调可以保留更多原始色彩，避免过浓。")
+            Text("0% 等于不套 LUT，100% 是全量。往中间调可以保留更多原始色彩。")
         }
     }
 
@@ -178,7 +159,7 @@ struct SettingsSheet: View {
         } header: {
             Text("实况照片")
         } footer: {
-            Text("实况照片 = 一张静态图 + 一段短视频。切换应用范围立刻生效，下次拍摄就用新设置。")
+            Text("实况照片 = 一张静态图 + 一段短视频。")
         }
     }
 
@@ -203,6 +184,15 @@ struct SettingsSheet: View {
                     .lineLimit(1)
             }
             .font(.footnote)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("镜头探测")
+                    .font(.footnote)
+                Text(model.lensDebug.isEmpty ? "—" : model.lensDebug)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
         }
     }
 }
