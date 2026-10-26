@@ -1,0 +1,20 @@
+# Xcode
+build/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+*.xcuserstate
+
+# macOS
+.DS_Store
+
+# 产物
+*.ipa
+Payload/
+_dl/
+
+# 其他
+*.moved-aside
+*.hmap
+*.dSYM.zip

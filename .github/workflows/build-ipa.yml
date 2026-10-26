@@ -1,0 +1,74 @@
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 选择 Xcode
+        run: |
+          echo "== 已安装的 Xcode =="
+          ls /Applications | grep -i xcode || true
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+          echo "== 可用 SDK =="
+          xcodebuild -showsdks | grep -i iphone || true
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 生成 Xcode 工程
+        run: xcodegen generate
+
+      - name: 编译（不签名）
+        run: |
+          xcodebuild \
+            -project CameraLUT.xcodeproj \
+            -scheme CameraLUT \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: 打包成 IPA
+        run: |
+          APP_PATH="build/Build/Products/Release-iphoneos/CameraLUT.app"
+          ls -la "$APP_PATH" || true
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qry CameraLUT.ipa Payload
+          ls -lh CameraLUT.ipa
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: CameraLUT-ipa
+          path: CameraLUT.ipa
+          retention-days: 30
+
+      - name: 发布到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: 最新构建 · LUT Cam
+          body: |
+            自动构建的未签名 IPA，下载后导入全能签签名安装。
+
+            提交：${{ github.sha }}
+          files: CameraLUT.ipa
+          make_latest: true
+          overwrite_files: true
