@@ -47,6 +47,17 @@ final class CameraSession: NSObject, ObservableObject {
     private let filterLock = NSLock()
     private var activeFilter: CIFilter?
 
+    // 供缩略图使用的取景快照（限频更新，避免每帧都存）
+    private let snapshotLock = NSLock()
+    private var snapshot: CIImage?
+    private var lastSnapshotAt: TimeInterval = 0
+
+    func currentSnapshot() -> CIImage? {
+        snapshotLock.lock()
+        defer { snapshotLock.unlock() }
+        return snapshot
+    }
+
     weak var renderer: PreviewRenderer?
 
     // MARK: - 状态
@@ -624,6 +635,15 @@ extension CameraSession: AVCaptureVideoDataOutputSampleBufferDelegate {
         }
 
         var image = CIImage(cvPixelBuffer: pixelBuffer, options: [.colorSpace: LUT3D.sRGB])
+
+        // 留一份未套 LUT 的快照给缩略图用
+        let now = Date().timeIntervalSinceReferenceDate
+        if now - lastSnapshotAt > 0.8 {
+            lastSnapshotAt = now
+            snapshotLock.lock()
+            snapshot = image
+            snapshotLock.unlock()
+        }
 
         if let filter = snapshotFilter() {
             filter.setValue(image, forKey: kCIInputImageKey)

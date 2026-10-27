@@ -12,11 +12,9 @@ struct CameraView: View {
     @State private var showImporter = false
     @State private var lastThumb: UIImage?
 
-    // 手势基准
     @State private var pinchBase: CGFloat = 1
     @State private var lensDragBase: CGFloat?
 
-    // 对焦 / 曝光
     @State private var reticle: CGPoint?
     @State private var showExposure = false
     @State private var hideTask: Task<Void, Never>?
@@ -55,27 +53,26 @@ struct CameraView: View {
                         .padding(.horizontal, 16)
                         .padding(.top, safeInsets.top + 6)
 
-                    Spacer()
+                    Spacer(minLength: 0)
+
+                    exposureControl
 
                     if showManual {
                         ManualPanel(model: model)
                             .padding(.horizontal, 16)
-                            .padding(.bottom, 10)
+                            .padding(.bottom, 8)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
+                    } else {
+                        LUTStrip(model: model)
+                            .padding(.bottom, 4)
                     }
 
-                    exposureControl
                     zoomControl
-
-                    if !showManual {
-                        lensBar
-                            .padding(.top, 12)
-                    }
-
-                    bottomBar
+                    lensRow
+                    shutterRow
                         .padding(.horizontal, 24)
-                        .padding(.top, 14)
-                        .padding(.bottom, safeInsets.bottom + 12)
+                        .padding(.top, 10)
+                        .padding(.bottom, safeInsets.bottom + 10)
                 }
 
                 toastLayer
@@ -139,8 +136,7 @@ struct CameraView: View {
     }
 
     private func handleTap(at location: CGPoint, in size: CGSize) {
-        let devicePoint = devicePoint(from: location, in: size)
-        model.focus(at: devicePoint)
+        model.focus(at: devicePoint(from: location, in: size))
 
         withAnimation(.spring(response: 0.26, dampingFraction: 0.66)) {
             reticle = location
@@ -220,7 +216,7 @@ struct CameraView: View {
                     .padding(14)
                     .glassEffect(.regular.tint(.red.opacity(0.55)), in: .rect(cornerRadius: 16))
                     .padding(.horizontal, 30)
-                    .padding(.bottom, 220)
+                    .padding(.bottom, 260)
                     .onTapGesture { model.errorText = nil }
             }
         }
@@ -294,26 +290,6 @@ struct CameraView: View {
             .buttonBorderShape(.circle)
 
             Button {
-                showGallery = true
-            } label: {
-                ZStack {
-                    if let lastThumb {
-                        Image(uiImage: lastThumb)
-                            .resizable()
-                            .scaledToFill()
-                    } else {
-                        Image(systemName: "photo.on.rectangle")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(.primary)
-                    }
-                }
-                .frame(width: 40, height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.roundedRectangle(radius: 11))
-
-            Button {
                 showSettings = true
             } label: {
                 Image(systemName: "gearshape")
@@ -326,11 +302,10 @@ struct CameraView: View {
         }
     }
 
-    /// 左上角：点击弹出 LUT 菜单（Menu 自己处理点击，玻璃不加 interactive）
     private var lutMenu: some View {
         Menu {
             Picker("LUT", selection: lutSelection) {
-                Text("无").tag("")
+                Text("原图").tag("")
                 ForEach(model.lutInfos) { info in
                     Text(info.name).tag(info.id)
                 }
@@ -395,7 +370,7 @@ struct CameraView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .glassEffect(.regular, in: .capsule)
-            .padding(.bottom, 8)
+            .padding(.bottom, 6)
             .transition(.opacity.combined(with: .move(edge: .bottom)))
         }
     }
@@ -433,7 +408,7 @@ struct CameraView: View {
             .padding(.vertical, 8)
             .glassEffect(.regular, in: .capsule)
             .padding(.horizontal, 40)
-            .padding(.bottom, 8)
+            .padding(.bottom, 6)
             .transition(.opacity.combined(with: .scale(scale: 0.92)))
             .animation(.spring(response: 0.35, dampingFraction: 0.8), value: abs(model.virtualZoom - 1) > 0.05)
         }
@@ -442,7 +417,7 @@ struct CameraView: View {
     // MARK: - 镜头快切
 
     @ViewBuilder
-    private var lensBar: some View {
+    private var lensRow: some View {
         if model.lenses.count > 1 {
             HStack(spacing: 6) {
                 ForEach(model.lenses) { lens in
@@ -467,9 +442,9 @@ struct CameraView: View {
         }
     }
 
-    // MARK: - 底部
+    // MARK: - 快门行
 
-    private var bottomBar: some View {
+    private var shutterRow: some View {
         HStack(alignment: .center) {
             Button {
                 model.livePhotoEnabled.toggle()
@@ -509,20 +484,24 @@ struct CameraView: View {
             Spacer()
 
             Button {
-                model.lutEnabled.toggle()
+                showGallery = true
             } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "camera.filters")
-                        .font(.system(size: 17, weight: .medium))
-                    Text(model.lutEnabled ? "开" : "关")
-                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                ZStack {
+                    if let lastThumb {
+                        Image(uiImage: lastThumb)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Image(systemName: "photo.on.rectangle")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.primary)
+                    }
                 }
-                .foregroundStyle(model.lutEnabled ? Color.green : Color.red)
                 .frame(width: 54, height: 54)
+                .clipShape(Circle())
             }
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
-            .tint(model.lutEnabled ? Color.green : Color.red)
         }
     }
 
