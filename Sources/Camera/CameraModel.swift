@@ -126,6 +126,8 @@ final class CameraModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .assign(to: &$livePhotoSupported)
 
+        // 注意：不要把 session.$livePhotoEnabled 绑到 livePhotoEnabled 上，
+        // 那是「设备是否已启用实况」的诊断状态，会覆盖用户开关。
         session.$livePhotoEnabled
             .receive(on: DispatchQueue.main)
             .assign(to: &$livePhotoArmed)

@@ -2,9 +2,9 @@ import SwiftUI
 
 struct SettingsSheet: View {
     @ObservedObject var model: CameraModel
-    @Binding var showImporter: Bool
 
     @Environment(\.dismiss) private var dismiss
+    @State private var showPicker = false
 
     var body: some View {
         NavigationStack {
@@ -21,6 +21,12 @@ struct SettingsSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { dismiss() }
                 }
+            }
+            .sheet(isPresented: $showPicker) {
+                DocumentPicker { url in
+                    model.importLUT(from: url)
+                }
+                .ignoresSafeArea()
             }
         }
     }
@@ -62,10 +68,7 @@ struct SettingsSheet: View {
             }
 
             Button {
-                dismiss()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    showImporter = true
-                }
+                showPicker = true
             } label: {
                 Label("导入 .cube 文件", systemImage: "square.and.arrow.down")
             }

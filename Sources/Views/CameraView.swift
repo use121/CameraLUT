@@ -9,7 +9,6 @@ struct CameraView: View {
     @State private var showSettings = false
     @State private var showGallery = false
     @State private var showManual = false
-    @State private var showImporter = false
     @State private var lastThumb: UIImage?
 
     @State private var pinchBase: CGFloat = 1
@@ -81,23 +80,10 @@ struct CameraView: View {
         }
         .ignoresSafeArea()
         .sheet(isPresented: $showSettings) {
-            SettingsSheet(model: model, showImporter: $showImporter)
+            SettingsSheet(model: model)
         }
         .sheet(isPresented: $showGallery) {
             GalleryView(model: model)
-        }
-        .fileImporter(
-            isPresented: $showImporter,
-            allowedContentTypes: [.data, .item],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else { return }
-                model.importLUT(from: url)
-            case .failure(let error):
-                model.errorText = "选择文件失败：\(error.localizedDescription)"
-            }
         }
         .alert("提示", isPresented: Binding(
             get: { model.errorText != nil },
@@ -449,13 +435,13 @@ struct CameraView: View {
             Button {
                 model.livePhotoEnabled.toggle()
             } label: {
-                VStack(spacing: 4) {
+                VStack(spacing: 3) {
                     Image(systemName: model.livePhotoEnabled ? "livephoto" : "livephoto.slash")
                         .font(.system(size: 17, weight: .medium))
-                    Text("实况")
+                    Text(model.livePhotoEnabled ? "实况开" : "实况关")
                         .font(.system(size: 9, weight: .medium, design: .rounded))
                 }
-                .foregroundStyle(model.livePhotoEnabled ? Color.yellow : Color.primary)
+                .foregroundStyle(model.livePhotoEnabled ? Color.yellow : Color.primary.opacity(0.65))
                 .frame(width: 54, height: 54)
             }
             .buttonStyle(.glass)
