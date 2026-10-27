@@ -689,7 +689,7 @@ final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate {
 
     func photoOutput(
         _ output: AVCapturePhotoOutput,
-        didFinishProcessingLivePhotoToMovieFileAt outputFileURL: URL?,
+        didFinishProcessingLivePhotoToMovieFileAt outputFileURL: URL,
         duration: CMTime,
         photoDisplayTime: CMTime,
         resolvedSettings: AVCaptureResolvedPhotoSettings,

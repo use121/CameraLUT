@@ -67,10 +67,10 @@ enum PhotoSaver {
         let properties: [CFString: Any] = [
             kCGImageDestinationLossyCompressionQuality: quality
         ]
-        if let data = encodeWith(cgImage, type: UTType.heic.identifier, properties: properties) {
+        if let data = encode(cgImage, type: UTType.heic.identifier, properties: properties) {
             return data
         }
-        return encodeWith(cgImage, type: UTType.jpeg.identifier, properties: properties)
+        return encode(cgImage, type: UTType.jpeg.identifier, properties: properties)
     }
 
     private static func encode(_ cgImage: CGImage, type: String, properties: [CFString: Any]) -> Data? {
