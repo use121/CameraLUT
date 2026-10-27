@@ -262,6 +262,7 @@ struct CameraView: View {
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
             .tint(showManual ? Color.yellow : Color.clear)
+            .id("manual-\(showManual)")
 
             Button {
                 pinchBase = 1
@@ -321,6 +322,8 @@ struct CameraView: View {
             .padding(.vertical, 9)
             .glassEffect(.regular, in: .capsule)
         }
+        // Menu 的 label 不会跟着状态刷新，用 id 强制重建
+        .id("lut-\(model.selectedFile ?? "none")-\(model.lutEnabled)")
     }
 
     // MARK: - 曝光
@@ -421,6 +424,7 @@ struct CameraView: View {
                     .buttonStyle(.glass)
                     .buttonBorderShape(.capsule)
                     .tint(active ? Color.yellow : Color.clear)
+                    .id("\(lens.label)-\(active)")
                 }
             }
             .animation(.spring(response: 0.42, dampingFraction: 0.72), value: model.activeLensBase)
@@ -447,6 +451,8 @@ struct CameraView: View {
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
             .tint(model.livePhotoEnabled ? Color.yellow : Color.clear)
+            // 同上：glass 按钮的 label 不会自动刷新
+            .id("live-\(model.livePhotoEnabled)")
 
             Spacer()
 
