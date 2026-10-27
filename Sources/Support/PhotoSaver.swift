@@ -62,6 +62,17 @@ enum PhotoSaver {
 
     // MARK: - 编码
 
+    /// 供编辑器导出使用
+    static func encodeHEIC(_ cgImage: CGImage, quality: Double) -> Data? {
+        let properties: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: quality
+        ]
+        if let data = encodeWith(cgImage, type: UTType.heic.identifier, properties: properties) {
+            return data
+        }
+        return encodeWith(cgImage, type: UTType.jpeg.identifier, properties: properties)
+    }
+
     private static func encode(_ cgImage: CGImage, type: String, properties: [CFString: Any]) -> Data? {
         let output = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(

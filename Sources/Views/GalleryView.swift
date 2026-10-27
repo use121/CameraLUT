@@ -29,7 +29,12 @@ struct GalleryView: View {
                 CapturePager(
                     items: model.captures,
                     startIndex: start,
-                    onDelete: { item in delete([item]) }
+                    onDelete: { item in delete([item]) },
+                    onChanged: {
+                        model.captures = CaptureStore.shared.items()
+                        model.lastCapture = model.captures.first
+                        showDetail = false
+                    }
                 )
             }
         }
@@ -180,15 +185,23 @@ struct CapturePager: View {
     let items: [CaptureItem]
     let startIndex: Int
     let onDelete: (CaptureItem) -> Void
+    var onChanged: () -> Void = {}
 
     @Environment(\.dismiss) private var dismiss
     @State private var index: Int
     @State private var showVideo = false
+    @State private var editingItem: CaptureItem?
 
-    init(items: [CaptureItem], startIndex: Int, onDelete: @escaping (CaptureItem) -> Void) {
+    init(
+        items: [CaptureItem],
+        startIndex: Int,
+        onDelete: @escaping (CaptureItem) -> Void,
+        onChanged: @escaping () -> Void = {}
+    ) {
         self.items = items
         self.startIndex = startIndex
         self.onDelete = onDelete
+        self.onChanged = onChanged
         _index = State(initialValue: min(max(startIndex, 0), max(items.count - 1, 0)))
     }
 
@@ -214,9 +227,9 @@ struct CapturePager: View {
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(.white)
                             .frame(width: 38, height: 38)
-                            .glassEffect(.regular.interactive(), in: Circle())
                     }
-                    .buttonStyle(.pressable)
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
 
                     Spacer()
 
@@ -239,9 +252,22 @@ struct CapturePager: View {
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(.white)
                                 .frame(width: 38, height: 38)
-                                .glassEffect(.regular.interactive(), in: Circle())
                         }
-                        .buttonStyle(.pressable)
+                        .buttonStyle(.glass)
+                        .buttonBorderShape(.circle)
+                    }
+
+                    if let current = currentItem {
+                        Button {
+                            editingItem = current
+                        } label: {
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 38, height: 38)
+                        }
+                        .buttonStyle(.glass)
+                        .buttonBorderShape(.circle)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -261,6 +287,9 @@ struct CapturePager: View {
                 VideoPlayer(player: AVPlayer(url: url))
                     .ignoresSafeArea()
             }
+        }
+        .sheet(item: $editingItem) { target in
+            EditorView(item: target, onSaved: onChanged)
         }
     }
 
