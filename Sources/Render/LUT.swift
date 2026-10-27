@@ -261,7 +261,17 @@ final class LUTStore {
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
 
         let data = try Data(contentsOf: url)
-        let target = folder.appendingPathComponent(url.lastPathComponent)
+        guard !data.isEmpty else {
+            throw LUTError.invalid("文件是空的，可能没有真正复制过来")
+        }
+
+        // 有些来源（asCopy / iCloud）拿到的文件名可能丢了扩展名，这里补回来
+        var fileName = url.lastPathComponent
+        if !fileName.lowercased().hasSuffix(".cube") {
+            fileName += ".cube"
+        }
+
+        let target = folder.appendingPathComponent(fileName)
 
         if FileManager.default.fileExists(atPath: target.path) {
             try? FileManager.default.removeItem(at: target)
@@ -269,10 +279,10 @@ final class LUTStore {
         try data.write(to: target)
 
         cacheLock.lock()
-        cache[target.lastPathComponent] = nil
+        cache[fileName] = nil
         cacheLock.unlock()
 
-        return target.lastPathComponent
+        return fileName
     }
 
     func url(for fileName: String) -> URL {
@@ -291,6 +301,16 @@ final class LUTStore {
         cache[fileName] = lut
         cacheLock.unlock()
         return lut
+    }
+
+    /// 解析失败时给出具体原因
+    func errorForFile(_ fileName: String) -> String? {
+        do {
+            _ = try LUT3D.parse(url: url(for: fileName))
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     /// 读取基本信息但不做完整解析，用于列表展示（避免界面卡顿）

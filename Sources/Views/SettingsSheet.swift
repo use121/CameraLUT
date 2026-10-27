@@ -24,9 +24,20 @@ struct SettingsSheet: View {
             }
             .sheet(isPresented: $showPicker) {
                 DocumentPicker { url in
-                    model.importLUT(from: url)
+                    // 等选择器完全收起再处理，避免弹窗叠在一起
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        model.importLUT(from: url)
+                    }
                 }
                 .ignoresSafeArea()
+            }
+            .alert("提示", isPresented: Binding(
+                get: { model.errorText != nil },
+                set: { if !$0 { model.errorText = nil } }
+            )) {
+                Button("好") { model.errorText = nil }
+            } message: {
+                Text(model.errorText ?? "")
             }
         }
     }
@@ -195,6 +206,15 @@ struct SettingsSheet: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("上次导入")
+                    .font(.footnote)
+                Text(model.lastImportInfo)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
             }
         }
     }

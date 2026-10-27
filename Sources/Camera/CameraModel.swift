@@ -92,6 +92,8 @@ final class CameraModel: ObservableObject {
 
     @Published var lensDebug: String = ""
 
+    @Published var lastImportInfo: String = "—"
+
     var isFront: Bool { position == .front }
 
     /// 当前焦段落在哪颗镜头的范围里，用于高亮
@@ -272,17 +274,27 @@ final class CameraModel: ObservableObject {
     }
 
     func importLUT(from url: URL) {
-        guard url.pathExtension.lowercased() == "cube" else {
-            errorText = "请选择 .cube 格式的 LUT 文件"
-            return
-        }
+        lastImportInfo = "开始：\(url.lastPathComponent)"
+
         do {
             let name = try LUTStore.shared.importFile(from: url)
+
+            guard let lut = LUTStore.shared.load(fileName: name) else {
+                let reason = LUTStore.shared.errorForFile(name) ?? "无法解析"
+                lastImportInfo = "解析失败：\(reason)"
+                errorText = "LUT 解析失败：\(reason)"
+                refreshLUTs()
+                return
+            }
+
+            lastImportInfo = "成功：\(name) · \(lut.source) · \(lut.dimension)³"
             refreshLUTs()
             select(name)
-            showToast("已导入 \(name)")
+            lutEnabled = true
+            showToast("已导入 \(lut.name)")
         } catch {
-            errorText = error.localizedDescription
+            lastImportInfo = "失败：\(error.localizedDescription)"
+            errorText = "导入失败：\(error.localizedDescription)"
         }
     }
 
