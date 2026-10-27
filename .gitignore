@@ -19,3 +19,7 @@ _inspect/
 *.moved-aside
 *.hmap
 *.dSYM.zip
+
+# 临时目录
+_log/
+_inspect/
